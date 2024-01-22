@@ -68,6 +68,7 @@ std::string command_input(void);
 static bool         l_bGPIOInit = false;
 static int          l_iDriveSelect = FDC_SEL10;
 static int          l_iDriveMotor = FDC_SEL16;
+static int          l_iCurrentTrack = -1;
 
 const uint32_t      cuiSampleBufSize = 16384;
 static uint32_t     l_uiSampleBuffer[cuiSampleBufSize];
@@ -343,6 +344,164 @@ void loop()
         while (Serial.available() > 0)
         {
             Serial.read();
+        }
+    }
+    else if (strInput == "test seek")
+    {
+        // turn on the motor
+        gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
+        gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
+        // set direction to seek out (towards track 0)
+        gpio_set_level(FDC_DIR, 0);
+        
+        // wait 0.5 seconds for speed to settle
+        delay(TIME_MOTOR_SETTLE);
+
+        // search for track zero
+        l_iCurrentTrack = -1;
+        int iMoved = 0;
+        for (; iMoved < 86; iMoved++)
+        {
+            if (gpio_get_level(FDC_TRK00))
+                break;
+            gpio_set_level(FDC_STEP, 1);
+            delay_micros(1);
+            gpio_set_level(FDC_STEP, 0);
+            delay_micros(4999);
+        }
+        if (iMoved == 86)
+        {
+            Serial.write("Error: head stepped 86 tracks but TRACK0 signal never became active.\r\n");
+            gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
+            gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+            return;
+        }
+        Serial.printf("Found track 0 after stepping %.1f tracks.\r\n", (float) iMoved);
+
+        // try seeking back and forth a few times
+        vTaskDelay(200);
+        for (int iDistance = 0; iDistance < 5; iDistance++)
+        {
+            const int iTracks = 5 * (1 << iDistance) - 1;
+            Serial.printf("Seeking to track %i and back.\r\n", iTracks);
+            gpio_set_level(FDC_DIR, 1);
+            vTaskDelay(1);
+            for (iMoved = 0; iMoved < iTracks; iMoved++)
+            {
+                gpio_set_level(FDC_STEP, 1);
+                delay_micros(1);
+                gpio_set_level(FDC_STEP, 0);
+                delay_micros(4999);
+                if (gpio_get_level(FDC_TRK00))
+                    break;
+            }
+            if (iMoved != iTracks)
+            {
+                Serial.write("Error: head stepped %.1f tracks in, but TRACK0 signal was still active.\r\n", (float) iMoved);
+                gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
+                gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+                return;
+            }
+            gpio_set_level(FDC_DIR, 0);
+            vTaskDelay(200);
+            for (iMoved = 0; iMoved < iTracks; )
+            {
+                gpio_set_level(FDC_STEP, 1);
+                delay_micros(1);
+                gpio_set_level(FDC_STEP, 0);
+                delay_micros(4999);
+                iMoved++;
+                if (gpio_get_level(FDC_TRK00))
+                    break;
+            }
+            if (iMoved < iTracks)
+            {
+                Serial.printf("Error: TRACK0 signal was asserted after stepping out %.1f of %i tracks.\r\n", (float) iMoved, iTracks);
+                gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
+                gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+                return;
+            }
+            if (!gpio_get_level(FDC_TRK00))
+            {
+                Serial.printf("Error: TRACK0 signal was not asserted after stepping inward and back out %i tracks.\r\n", iTracks);
+                gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
+                gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+                return;
+            }
+            vTaskDelay(200);
+        }
+
+        // all good
+        Serial.write("All tests successful.\r\n");
+        l_iCurrentTrack = 0;
+        
+        // turn off the motor
+        gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
+        gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+    }
+    else if (strInput.find("seek ") == 0)
+    {
+        int iTargetTrack;
+        if (sscanf(strInput.c_str() + 5, "%d", &iTargetTrack) != 1)
+        {
+            Serial.printf("Error: track number not found in command '%s'.\r\n", strInput.c_str());
+            return;
+        }
+        if (iTargetTrack < 0 || iTargetTrack > 85)
+        {
+            Serial.printf("Error: invalid target track '%i' specified.\r\n", iTargetTrack);
+            return;
+        }
+        if (l_iCurrentTrack == -1)
+        {
+            Serial.write("Error: track position not known. You must use \"TEST SEEK\" first.\r\n");
+            return;
+        }
+        if (l_iCurrentTrack == iTargetTrack)
+        {
+            Serial.printf("Error: drive is already at track %i.\r\n", iTargetTrack);
+            return;
+        }
+
+        // turn on the motor
+        gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
+        gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
+        
+        // set direction to seek
+        int iTracksToMove = 0;
+        if (iTargetTrack < l_iCurrentTrack)
+        {
+            gpio_set_level(FDC_DIR, 0);
+            iTracksToMove = l_iCurrentTrack - iTargetTrack;
+        }
+        else
+        {
+            gpio_set_level(FDC_DIR, 1);
+            iTracksToMove = iTargetTrack - l_iCurrentTrack;
+        }
+        
+        // wait 0.5 seconds for speed to settle
+        delay(TIME_MOTOR_SETTLE);
+
+        // move to the target track
+        int iMoved = 0;
+        for (; iMoved < iTracksToMove; iMoved++)
+        {
+            gpio_set_level(FDC_STEP, 1);
+            delay_micros(1);
+            gpio_set_level(FDC_STEP, 0);
+            delay_micros(4999);
+        }
+
+        // special case if destination is zero
+        if (iTargetTrack == 0 && !gpio_get_level(FDC_TRK00))
+        {
+            Serial.write("Error: moved to track 0 but TRACK0 signal is not active.\r\n");
+            l_iCurrentTrack = -1;
+        }
+        else
+        {
+            l_iCurrentTrack = iTargetTrack;
         }
     }
     else
