@@ -11,6 +11,8 @@
 #include <driver/timer.h>
 #include <driver/mcpwm.h>
 #include <soc/mcpwm_struct.h>
+#include <soc/timer_group_struct.h>
+#include <soc/timer_group_reg.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -105,6 +107,12 @@ void setup()
     l_iPinFDDbySignal[FDC_RDATA] = 30;
     l_iPinFDDbySignal[FDC_SIDE1] = 32;
     l_iPinFDDbySignal[FDC_DISKCHG] = 34;
+
+    // disable interrupt watchdog
+    TIMERG1.wdt_wprotect = TIMG_WDT_WKEY_VALUE; // Unlock timer config.
+    TIMERG1.wdt_feed = 1; // Reset feed count.
+    TIMERG1.wdt_config0.en = 0; // Disable timer.
+    TIMERG1.wdt_wprotect = 0; // Lock timer config.
 }
 
 void loop()
@@ -201,6 +209,12 @@ void loop()
         {
             gpio_set_level((gpio_num_t) l_aiPinsOutput[i], 0);
         }
+        // here is a much faster way to set and clear GPIO pins
+        //portDISABLE_INTERRUPTS();
+        //REG_WRITE(GPIO_OUT_W1TS_REG, (1 << FDC_SEL10));
+        //REG_WRITE(GPIO_OUT_W1TC_REG, (1 << FDC_SEL10));
+        //REG_WRITE(GPIO_OUT1_W1TS_REG, (1 << (FDC_SEL06-32)));
+        //REG_WRITE(GPIO_OUT1_W1TC_REG, (1 << (FDC_SEL06-32)));
     }
     else if (strInput == "motor on")
     {
@@ -372,6 +386,19 @@ static void IRAM_ATTR onSignalEdge(void *pParams)
 //////////////////////////////////////////////////////////////////////////
 // Helper functions
 
+void delay_micros(uint32_t uiMicros)
+{
+    uint32_t uiCycles = uiMicros * 240 - 25;
+    uint32_t uiEnd, uiCur;
+    asm volatile("  rsr %0, ccount                \n"
+                 "  add %0, %2, %0                \n"
+                 "Loop0:                          \n"
+                 "  rsr %1, ccount                \n"
+                 "  blt %1, %0, Loop0             \n"
+                 : "=&a"(uiEnd), "=a"(uiCur)
+                 : "a"(uiCycles) );
+}
+
 void gpio_reset(void)
 {
     for (int i = 0; i < l_iNumInputs; i++)
@@ -418,7 +445,7 @@ std::string command_input(void)
         // wait until we have a new character
         if (Serial.available() == 0)
         {
-            vTaskDelay(5);      // wait for 50 milliseconds
+            vTaskDelay(50);      // wait for 50 milliseconds
             continue;
         }
         char newChar = Serial.read();
