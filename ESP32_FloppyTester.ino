@@ -1,5 +1,19 @@
+//////////////////////////////////////////////////////////////////////////
+// ESP32_FloppyTester
+// 
+// Copyright (C) 2023-2024, All Rights Reserved.
+//
+// Author: Richard Goedeken
+
+#include <stdint.h>
+#include <string.h>
 
 #include <driver/timer.h>
+#include <driver/mcpwm.h>
+#include <soc/mcpwm_struct.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 //////////////////////////////////////////////////////////////////////////
 // Definitions
@@ -23,6 +37,12 @@
 #define FDC_SIDE1    GPIO_NUM_17
 #define FDC_DISKCHG  GPIO_NUM_13
 
+#define TIME_MOTOR_SETTLE       500
+
+#define CAP0_INT_EN BIT(27)  //Capture 0 interrupt bit
+#define CAP1_INT_EN BIT(28)  //Capture 1 interrupt bit
+#define CAP2_INT_EN BIT(29)  //Capture 2 interrupt bit
+
 const gpio_num_t l_aiPinsInput[] = { FDC_INDEX, FDC_TRK00, FDC_WPT, FDC_RDATA, FDC_DISKCHG };
 const int l_iNumInputs = sizeof(l_aiPinsInput) / sizeof(gpio_num_t);
 const gpio_num_t l_aiPinsOutput[] = { FDC_DENSEL, FDC_SEL06, FDC_SEL10, FDC_SEL12, FDC_SEL14, FDC_SEL16, FDC_DIR, FDC_STEP, FDC_WDATA, FDC_WGATE, FDC_SIDE1 };
@@ -33,6 +53,8 @@ int l_iPinFDDbySignal[40];
 //////////////////////////////////////////////////////////////////////////
 // Forward declarations
 
+static void IRAM_ATTR onSignalEdge(void *pParams);
+
 void gpio_reset(void);
 void gpio_init(void);
 
@@ -41,9 +63,13 @@ std::string command_input(void);
 //////////////////////////////////////////////////////////////////////////
 // Local variables
 
-static bool l_bGPIOInit = false;
-static int  l_iDriveSelect = FDC_SEL10;
-static int  l_iDriveMotor = FDC_SEL16;
+static bool         l_bGPIOInit = false;
+static int          l_iDriveSelect = FDC_SEL10;
+static int          l_iDriveMotor = FDC_SEL16;
+
+const uint32_t      cuiSampleBufSize = 16384;
+static uint32_t     l_uiSampleBuffer[cuiSampleBufSize];
+static volatile uint32_t l_uiSampleCnt = 0;
 
 //////////////////////////////////////////////////////////////////////////
 // Initialization
@@ -52,24 +78,14 @@ void setup()
 {
     // setup serial port (which internally uses UART 0)
     Serial.begin(115200);
+    do {
+      vTaskDelay(10);
+    } while(!Serial);
+    delay(200);
     Serial.write("\r\n\r\n\r\nESP32_FloppyTester v" E32FT_VERSION " ready.\r\n");
 
     // set up GPIO pins and set outputs to 0
     gpio_init();
-
-    // setup timer 0-0 to run as 80MHz incrementing counter, to use for timing, and start it
-    timer_config_t config0 = {
-        .alarm_en = TIMER_ALARM_DIS,
-        .counter_en = TIMER_PAUSE,
-        .intr_type = TIMER_INTR_LEVEL,
-        .counter_dir = TIMER_COUNT_UP,
-        .auto_reload = TIMER_AUTORELOAD_DIS,
-        .divider = 1,
-    };
-    timer_init(TIMER_GROUP_0, TIMER_0, &config0);
-    timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0);
-    timer_disable_intr(TIMER_GROUP_0, TIMER_0);
-    timer_start(TIMER_GROUP_0, TIMER_0);
 
     // set up table mapping signal names to FDD connector pins (used for testing)
     memset(l_iPinFDDbySignal, 0, sizeof(l_iPinFDDbySignal));
@@ -241,10 +257,116 @@ void loop()
             }
         }
     }
+    else if (strInput == "test rpm")
+    {
+        // turn on the motor
+        gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
+        gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
+        
+        // wait 0.5 seconds for speed to settle
+        delay(TIME_MOTOR_SETTLE);
+
+        // reset the sample buffer and enable the index pulse edge capture
+        l_uiSampleCnt = 0;
+        mcpwm_capture_enable(MCPWM_UNIT_0, MCPWM_SELECT_CAP0, MCPWM_POS_EDGE, 0);
+        MCPWM0.int_ena.val = CAP0_INT_EN;
+        mcpwm_isr_register(MCPWM_UNIT_0, onSignalEdge, NULL, ESP_INTR_FLAG_IRAM, NULL);
+ 
+        // print out the calculated speed once per second, until interrupted by user
+        bool bStarted = false;
+        uint32_t uiStartSample = 0;
+        uint32_t uiStartTime = 0;
+        uint32_t uiIterations = 0;
+        while(Serial.available() == 0)
+        {
+            // delay to avoid burning the CPU
+            delay(100);
+            uiIterations++;
+            // check for starting sample
+            if (!bStarted && l_uiSampleCnt > 0)
+            {
+                bStarted = true;
+                uiStartSample = 0;
+                uiStartTime = l_uiSampleBuffer[0];
+            }
+            // check for no index pulse
+            if (!bStarted && uiIterations >= 20)
+            {
+                Serial.write("Error: no index pulse found in 2 seconds.\r\n");
+                break;
+            }
+            // check for one-second window passed
+            if (bStarted)
+            {
+                const uint32_t uiLastTime = l_uiSampleBuffer[l_uiSampleCnt-1];
+                if (uiLastTime - uiStartTime >= 80 * 1000 * 1000)
+                {
+                    // find the next starting sample, ie the oldest sample which is >= 1 second ahead of current window start
+                    uint32_t uiNextStartSample = uiStartSample + 1;
+                    while (l_uiSampleBuffer[uiNextStartSample] - uiStartTime < 80 * 1000 * 1000)
+                        uiNextStartSample++;
+                    // calculate the speed and print it
+                    double dRevTimeTicks = (l_uiSampleBuffer[uiNextStartSample-1] - l_uiSampleBuffer[uiStartSample]) / ( uiNextStartSample - uiStartSample - 1);
+                    double dRevTimeSecs = dRevTimeTicks / 80000000.0;
+                    double dRPM = (1.0 / dRevTimeSecs) * 60.0;
+                    Serial.printf("Drive speed: %.4lf rpm\r\n", dRPM);
+                    // advance the window to the next second
+                    uiStartSample = uiNextStartSample;
+                    uiStartTime += 80 * 1000 * 1000;
+                }
+            }
+        }
+
+        // disable interrupt
+        mcpwm_capture_disable(MCPWM_UNIT_0, MCPWM_SELECT_CAP0);
+
+        // turn off the motor
+        gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
+        gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+
+        // discard all remaining serial data
+        delay(100);
+        while (Serial.available() > 0)
+        {
+            Serial.read();
+        }
+    }
     else
     {
         Serial.write("Unknown command.\r\n");
     }
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Interrupt Service Routine
+
+static void IRAM_ATTR onSignalEdge(void *pParams)
+{
+    // read interrupt status
+    uint32_t mcpwm_intr_status = MCPWM0.int_st.val;
+    
+    // get the latched 80MHz time
+    uint32_t signalTime = 0;
+    if (mcpwm_intr_status & CAP0_INT_EN)
+    {
+        signalTime = mcpwm_capture_signal_get_value(MCPWM_UNIT_0, MCPWM_SELECT_CAP0);
+    }
+    else if (mcpwm_intr_status & CAP1_INT_EN)
+    {
+        signalTime = mcpwm_capture_signal_get_value(MCPWM_UNIT_0, MCPWM_SELECT_CAP1);
+    }
+    else
+    {
+        MCPWM0.int_clr.val = mcpwm_intr_status;
+        return;
+    }
+
+    // record this time in our sample buffer
+    l_uiSampleBuffer[l_uiSampleCnt] = signalTime;
+    if (l_uiSampleCnt + 1 < cuiSampleBufSize)
+        l_uiSampleCnt++;
+
+    MCPWM0.int_clr.val = mcpwm_intr_status;
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -278,7 +400,11 @@ void gpio_init(void)
         gpio_set_level(l_aiPinsOutput[i], 0);
         gpio_set_direction(l_aiPinsOutput[i], GPIO_MODE_OUTPUT);
     }
-    
+
+    // we will use the MCPWM capture system to record timestamps of signal edges for the INDEX and RDATA lines
+    mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM_CAP_0, FDC_INDEX);
+    mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM_CAP_1, FDC_RDATA);
+
     l_bGPIOInit = true;
 }
 
@@ -292,7 +418,7 @@ std::string command_input(void)
         // wait until we have a new character
         if (Serial.available() == 0)
         {
-            vTaskDelay(50);      // wait for 50 milliseconds
+            vTaskDelay(5);      // wait for 50 milliseconds
             continue;
         }
         char newChar = Serial.read();
