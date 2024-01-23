@@ -373,6 +373,7 @@ void loop()
         // search for track zero
         l_iCurrentTrack = -1;
         int iMoved = 0;
+        portDISABLE_INTERRUPTS();
         for (; iMoved < 86; iMoved++)
         {
             if (gpio_get_level(FDC_TRK00))
@@ -382,6 +383,7 @@ void loop()
             gpio_set_level(FDC_STEP, 0);
             delay_micros(4999);
         }
+        portENABLE_INTERRUPTS();
         if (iMoved == 86)
         {
             Serial.write("Error: head stepped 86 tracks but TRACK0 signal never became active.\r\n");
@@ -399,6 +401,7 @@ void loop()
             Serial.printf("Seeking to track %i and back.\r\n", iTracks);
             gpio_set_level(FDC_DIR, 1);
             vTaskDelay(1);
+            portDISABLE_INTERRUPTS();
             for (iMoved = 0; iMoved < iTracks; iMoved++)
             {
                 gpio_set_level(FDC_STEP, 1);
@@ -408,6 +411,7 @@ void loop()
                 if (gpio_get_level(FDC_TRK00))
                     break;
             }
+            portENABLE_INTERRUPTS();
             if (iMoved != iTracks)
             {
                 Serial.write("Error: head stepped %.1f tracks in, but TRACK0 signal was still active.\r\n", (float) iMoved);
@@ -417,6 +421,7 @@ void loop()
             }
             gpio_set_level(FDC_DIR, 0);
             vTaskDelay(200);
+            portDISABLE_INTERRUPTS();
             for (iMoved = 0; iMoved < iTracks; )
             {
                 gpio_set_level(FDC_STEP, 1);
@@ -427,6 +432,7 @@ void loop()
                 if (gpio_get_level(FDC_TRK00))
                     break;
             }
+            portENABLE_INTERRUPTS();
             if (iMoved < iTracks)
             {
                 Serial.printf("Error: TRACK0 signal was asserted after stepping out %.1f of %i tracks.\r\n", (float) iMoved, iTracks);
