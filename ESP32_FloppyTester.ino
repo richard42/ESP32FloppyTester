@@ -70,9 +70,11 @@ static int          l_iDriveSelect = FDC_SEL10;
 static int          l_iDriveMotor = FDC_SEL16;
 static int          l_iCurrentTrack = -1;
 
-const uint32_t      cuiSampleBufSize = 16384;
-static uint32_t     l_uiSampleBuffer[cuiSampleBufSize];
-static volatile uint32_t l_uiSampleCnt = 0;
+const uint32_t            cuiSampleBufSize = 49152;
+static uint32_t          *l_puiSampleBuffers[12];      // 12 * 4096 == 49152
+static volatile uint32_t  l_uiSampleCnt = 0;
+
+#define SAMPLE_ITEM(X) l_puiSampleBuffers[(X)>>12][(X)&0x0fff]
 
 //////////////////////////////////////////////////////////////////////////
 // Initialization
@@ -90,6 +92,17 @@ void setup()
     // set up GPIO pins and set outputs to 0
     gpio_init();
 
+    // allocate sample buffer memory
+    for (int i = 0; i < 12; i++)
+    {
+        l_puiSampleBuffers[i] = (uint32_t *) malloc(16384);
+        if (l_puiSampleBuffers[i] == NULL)
+        {
+           Serial.printf("Error: failed to allocate sample buffer #%i/12.\r\n", i + 1);
+           return;
+        }
+    }
+    
     // set up table mapping signal names to FDD connector pins (used for testing)
     memset(l_iPinFDDbySignal, 0, sizeof(l_iPinFDDbySignal));
     l_iPinFDDbySignal[FDC_DENSEL] = 2;
@@ -302,7 +315,7 @@ void loop()
             {
                 bStarted = true;
                 uiStartSample = 0;
-                uiStartTime = l_uiSampleBuffer[0];
+                uiStartTime = l_puiSampleBuffers[0][0];
             }
             // check for no index pulse
             if (!bStarted && uiIterations >= 20)
@@ -313,15 +326,15 @@ void loop()
             // check for one-second window passed
             if (bStarted)
             {
-                const uint32_t uiLastTime = l_uiSampleBuffer[l_uiSampleCnt-1];
+                const uint32_t uiLastTime = SAMPLE_ITEM(l_uiSampleCnt-1);
                 if (uiLastTime - uiStartTime >= 80 * 1000 * 1000)
                 {
                     // find the next starting sample, ie the oldest sample which is >= 1 second ahead of current window start
                     uint32_t uiNextStartSample = uiStartSample + 1;
-                    while (l_uiSampleBuffer[uiNextStartSample] - uiStartTime < 80 * 1000 * 1000)
+                    while (SAMPLE_ITEM(uiNextStartSample) - uiStartTime < 80 * 1000 * 1000)
                         uiNextStartSample++;
                     // calculate the speed and print it
-                    double dRevTimeTicks = (l_uiSampleBuffer[uiNextStartSample-1] - l_uiSampleBuffer[uiStartSample]) / ( uiNextStartSample - uiStartSample - 1);
+                    double dRevTimeTicks = (SAMPLE_ITEM(uiNextStartSample-1) - SAMPLE_ITEM(uiStartSample)) / (uiNextStartSample - uiStartSample - 1);
                     double dRevTimeSecs = dRevTimeTicks / 80000000.0;
                     double dRPM = (1.0 / dRevTimeSecs) * 60.0;
                     Serial.printf("Drive speed: %.4lf rpm\r\n", dRPM);
@@ -503,6 +516,23 @@ void loop()
         {
             l_iCurrentTrack = iTargetTrack;
         }
+
+        // turn off the motor
+        gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
+        gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+    }
+    else if (strInput == "test read")
+    {
+        // turn on the motor
+        gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
+        gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
+        
+        // wait 0.5 seconds for speed to settle
+        delay(TIME_MOTOR_SETTLE);
+
+        // turn off the motor
+        gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
+        gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
     }
     else
     {
@@ -535,7 +565,7 @@ static void IRAM_ATTR onSignalEdge(void *pParams)
     }
 
     // record this time in our sample buffer
-    l_uiSampleBuffer[l_uiSampleCnt] = signalTime;
+    SAMPLE_ITEM(l_uiSampleCnt) = signalTime;
     if (l_uiSampleCnt + 1 < cuiSampleBufSize)
         l_uiSampleCnt++;
 
