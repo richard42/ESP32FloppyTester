@@ -70,8 +70,8 @@ static int          l_iDriveSelect = FDC_SEL10;
 static int          l_iDriveMotor = FDC_SEL16;
 static int          l_iCurrentTrack = -1;
 
-const uint32_t            cuiSampleBufSize = 49152;
-static uint32_t          *l_puiSampleBuffers[12];      // 12 * 4096 == 49152
+const uint32_t            cuiSampleBufSize = 53248;
+static uint32_t          *l_puiSampleBuffers[16];      // 13 * 4096 == 53248
 static volatile uint32_t  l_uiSampleCnt = 0;
 
 #define SAMPLE_ITEM(X) l_puiSampleBuffers[(X)>>12][(X)&0x0fff]
@@ -93,15 +93,17 @@ void setup()
     gpio_init();
 
     // allocate sample buffer memory
-    for (int i = 0; i < 12; i++)
+    //Serial.printf("Free heap memory: %i bytes\r\n", ESP.getFreeHeap());
+    for (int i = 0; i < 13; i++)
     {
         l_puiSampleBuffers[i] = (uint32_t *) malloc(16384);
         if (l_puiSampleBuffers[i] == NULL)
         {
-           Serial.printf("Error: failed to allocate sample buffer #%i/12.\r\n", i + 1);
+           Serial.printf("Error: failed to allocate sample buffer #%i/16.\r\n", i + 1);
            return;
         }
     }
+    //Serial.printf("Free heap memory: %i bytes\r\n", ESP.getFreeHeap());
     
     // set up table mapping signal names to FDD connector pins (used for testing)
     memset(l_iPinFDDbySignal, 0, sizeof(l_iPinFDDbySignal));
@@ -535,6 +537,27 @@ void loop()
         
         // wait 0.5 seconds for speed to settle
         delay(TIME_MOTOR_SETTLE);
+
+        // wait until index pulse arrives
+        do {} while (gpio_get_level(FDC_INDEX) == 0);
+
+        // reset the sample buffer and enable the RDATA pulse edge capture
+        l_uiSampleCnt = 0;
+        mcpwm_capture_enable(MCPWM_UNIT_0, MCPWM_SELECT_CAP1, MCPWM_POS_EDGE, 0);
+        MCPWM0.int_ena.val = CAP1_INT_EN;
+        mcpwm_isr_register(MCPWM_UNIT_0, onSignalEdge, NULL, ESP_INTR_FLAG_IRAM, NULL);
+
+        // wait until the index pulse leaves
+        do {} while (gpio_get_level(FDC_INDEX) == 1);
+
+        // wait until the next index pulse arrives
+        do {} while (gpio_get_level(FDC_INDEX) == 0);
+
+        // disable the signal capture
+        mcpwm_capture_disable(MCPWM_UNIT_0, MCPWM_SELECT_CAP1);
+
+        // print some statistics
+        Serial.printf("Track read complete; recorded %i flux transitions.\r\n", l_uiSampleCnt);
 
         // turn off the motor
         gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
