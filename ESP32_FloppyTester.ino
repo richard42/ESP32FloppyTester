@@ -72,11 +72,14 @@ static int          l_iDriveSelect = FDC_SEL10;
 static int          l_iDriveMotor = FDC_SEL16;
 static int          l_iCurrentTrack = -1;
 
-const uint32_t            cuiSampleBufSize = 53248;
-static uint32_t          *l_puiSampleBuffers[16];      // 13 * 4096 == 53248
-static volatile uint32_t  l_uiSampleCnt = 0;
+const uint32_t            cuiDeltaBufSize = 65536;
+static volatile bool      l_bRecording = false;
+static volatile uint32_t  l_uiLastSignalTime = 0;
+static uint16_t          *l_pusDeltaBuffers[16];      // 16 * 4096 == 65536
+static volatile uint16_t  l_uiDeltaPos = 0;
+static volatile uint32_t  l_uiDeltaCnt = 0;
 
-#define SAMPLE_ITEM(X) l_puiSampleBuffers[(X)>>12][(X)&0x0fff]
+#define DELTA_ITEM(X) l_pusDeltaBuffers[(X)>>12][(X)&0x0fff]
 
 //////////////////////////////////////////////////////////////////////////
 // Initialization
@@ -96,12 +99,12 @@ void setup()
 
     // allocate sample buffer memory
     //Serial.printf("Free heap memory: %i bytes\r\n", ESP.getFreeHeap());
-    for (int i = 0; i < 13; i++)
+    for (int i = 0; i < 16; i++)
     {
-        l_puiSampleBuffers[i] = (uint32_t *) malloc(16384);
-        if (l_puiSampleBuffers[i] == NULL)
+        l_pusDeltaBuffers[i] = (uint16_t *) malloc(8192);
+        if (l_pusDeltaBuffers[i] == NULL)
         {
-           Serial.printf("Error: failed to allocate sample buffer #%i/16.\r\n", i + 1);
+           Serial.printf("Error: failed to allocate delta buffer #%i/16.\r\n", i + 1);
            return;
         }
     }
@@ -299,52 +302,60 @@ void loop()
         delay(TIME_MOTOR_SETTLE);
 
         // reset the sample buffer and enable the index pulse edge capture
-        l_uiSampleCnt = 0;
+        l_bRecording = false;
+        l_uiLastSignalTime = 0;
+        l_uiDeltaPos = 0;
+        l_uiDeltaCnt = 0;
         mcpwm_capture_enable(MCPWM_UNIT_0, MCPWM_SELECT_CAP0, MCPWM_POS_EDGE, 0);
         MCPWM0.int_ena.val = CAP0_INT_EN;
         mcpwm_isr_register(MCPWM_UNIT_0, onSignalEdge, NULL, ESP_INTR_FLAG_IRAM, NULL);
  
         // print out the calculated speed once per second, until interrupted by user
         bool bStarted = false;
-        uint32_t uiStartSample = 0;
-        uint32_t uiStartTime = 0;
+        uint32_t uiSegmentDuration = 0;
+        uint32_t uiSegmentPulses = 0;
+        uint32_t uiDeltaReadPos = 0;
         uint32_t uiIterations = 0;
         while(Serial.available() == 0)
         {
             // delay to avoid burning the CPU
             delay(100);
             uiIterations++;
-            // check for starting sample
-            if (!bStarted && l_uiSampleCnt > 0)
+            // check for end of buffer condition
+            if (l_uiDeltaPos + 4 >= cuiDeltaBufSize)
             {
-                bStarted = true;
-                uiStartSample = 0;
-                uiStartTime = l_puiSampleBuffers[0][0];
+                break;
             }
             // check for no index pulse
-            if (!bStarted && uiIterations >= 20)
+            if (!l_bRecording && uiIterations >= 20)
             {
                 Serial.write("Error: no index pulse found in 2 seconds.\r\n");
                 break;
             }
             // check for one-second window passed
-            if (bStarted)
+            while(uiDeltaReadPos < l_uiDeltaPos)
             {
-                const uint32_t uiLastTime = SAMPLE_ITEM(l_uiSampleCnt-1);
-                if (uiLastTime - uiStartTime >= 80 * 1000 * 1000)
+                // get the next time delta from the buffer
+                uint32_t uiDelta = DELTA_ITEM(uiDeltaReadPos);
+                if (uiDelta & 0x8000)
                 {
-                    // find the next starting sample, ie the oldest sample which is >= 1 second ahead of current window start
-                    uint32_t uiNextStartSample = uiStartSample + 1;
-                    while (SAMPLE_ITEM(uiNextStartSample) - uiStartTime < 80 * 1000 * 1000)
-                        uiNextStartSample++;
-                    // calculate the speed and print it
-                    double dRevTimeTicks = (SAMPLE_ITEM(uiNextStartSample-1) - SAMPLE_ITEM(uiStartSample)) / (uiNextStartSample - uiStartSample - 1);
+                    uiDeltaReadPos++;
+                    uiDelta = ((uiDelta & 0x7fff) << 16) + DELTA_ITEM(uiDeltaReadPos);
+                }
+                uiDeltaReadPos++;
+                // add it to our segment duration
+                uiSegmentDuration += uiDelta;
+                uiSegmentPulses++;
+                // print calculated RPM speed if the segment is over one second
+                if (uiSegmentDuration >= 80 * 1000 * 1000)
+                {
+                    double dRevTimeTicks = (double) uiSegmentDuration / uiSegmentPulses;
                     double dRevTimeSecs = dRevTimeTicks / 80000000.0;
                     double dRPM = (1.0 / dRevTimeSecs) * 60.0;
                     Serial.printf("Drive speed: %.4lf rpm\r\n", dRPM);
                     // advance the window to the next second
-                    uiStartSample = uiNextStartSample;
-                    uiStartTime += 80 * 1000 * 1000;
+                    uiSegmentDuration = 0;
+                    uiSegmentPulses = 0;
                 }
             }
         }
@@ -544,7 +555,10 @@ void loop()
         do {} while (gpio_get_level(FDC_INDEX) == 0);
 
         // reset the sample buffer and enable the RDATA pulse edge capture
-        l_uiSampleCnt = 0;
+        l_bRecording = false;
+        l_uiLastSignalTime = 0;
+        l_uiDeltaPos = 0;
+        l_uiDeltaCnt = 0;
         mcpwm_capture_enable(MCPWM_UNIT_0, MCPWM_SELECT_CAP1, MCPWM_POS_EDGE, 0);
         MCPWM0.int_ena.val = CAP1_INT_EN;
         mcpwm_isr_register(MCPWM_UNIT_0, onSignalEdge, NULL, ESP_INTR_FLAG_IRAM, NULL);
@@ -559,7 +573,10 @@ void loop()
         mcpwm_capture_disable(MCPWM_UNIT_0, MCPWM_SELECT_CAP1);
 
         // print some statistics
-        Serial.printf("Track read complete; recorded %i flux transitions.\r\n", l_uiSampleCnt);
+        if (!l_bRecording)
+            Serial.printf("Track read complete; recorded no flux transitions.\r\n");
+        else
+            Serial.printf("Track read complete; recorded %i flux transitions.\r\n", l_uiDeltaCnt + 1);
 
         // turn off the motor
         gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
@@ -568,9 +585,15 @@ void loop()
         // calculate histogram
         std::map<uint32_t, uint32_t> mapCountByWavelen;
         std::map<uint32_t, float>    mapSumByWavelen;
-        for (uint32_t ui = 1; ui < l_uiSampleCnt; ui++)
+        for (uint32_t ui = 0; ui < l_uiDeltaPos; ui++)
         {
-            const float fWavelen = (SAMPLE_ITEM(ui) - SAMPLE_ITEM(ui-1)) / 80.0f;
+            uint32_t uiDelta = DELTA_ITEM(ui);
+            if (uiDelta & 0x8000)
+            {
+                ui++;
+                uiDelta = ((uiDelta & 0x7fff) << 16) + DELTA_ITEM(ui);
+            }
+            const float fWavelen = uiDelta / 80.0f;
             const uint32_t uiWavelen = floorf(fWavelen + 0.5f);
             if (mapCountByWavelen.count(uiWavelen) == 0)
             {
@@ -595,9 +618,15 @@ void loop()
         }
 
         // calculate variance of each bin
-        for (uint32_t ui = 1; ui < l_uiSampleCnt; ui++)
+        for (uint32_t ui = 0; ui < l_uiDeltaPos; ui++)
         {
-            const float fWavelen = (SAMPLE_ITEM(ui) - SAMPLE_ITEM(ui-1)) / 80.0f;
+            uint32_t uiDelta = DELTA_ITEM(ui);
+            if (uiDelta & 0x8000)
+            {
+                ui++;
+                uiDelta = ((uiDelta & 0x7fff) << 16) + DELTA_ITEM(ui);
+            }
+            const float fWavelen = uiDelta / 80.0f;
             const uint32_t uiWavelen = floorf(fWavelen + 0.5f);
             const float fDiff = fWavelen - mapAvgByWavelen[uiWavelen];
             mapVarByWavelen[uiWavelen] += fDiff * fDiff;
@@ -628,17 +657,17 @@ void loop()
             else
                 auiCountByWavelen[ui] = mapCountByWavelen[ui];
         }
-        if (l_uiSampleCnt > 1)
+        if (l_uiDeltaCnt > 10)
         {
-            if ((float) (auiCountByWavelen[2] + auiCountByWavelen[3] + auiCountByWavelen[4]) / (l_uiSampleCnt - 1) > 0.9f)
+            if ((float) (auiCountByWavelen[2] + auiCountByWavelen[3] + auiCountByWavelen[4]) / l_uiDeltaCnt > 0.9f)
             {
                 Serial.write("High Density MFM track detected.\r\n");
             }
-            if ((float) (auiCountByWavelen[4] + auiCountByWavelen[6] + auiCountByWavelen[8]) / (l_uiSampleCnt - 1) > 0.9f)
+            if ((float) (auiCountByWavelen[4] + auiCountByWavelen[6] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
             {
                 Serial.write("Double Density MFM track detected.\r\n");
             }
-            else if ((float) (auiCountByWavelen[3] + auiCountByWavelen[5] + auiCountByWavelen[8]) / (l_uiSampleCnt - 1) > 0.9f)
+            else if ((float) (auiCountByWavelen[3] + auiCountByWavelen[5] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
             {
                 Serial.write("Double Density GCR track detected.\r\n");
             }
@@ -675,10 +704,32 @@ static void IRAM_ATTR onSignalEdge(void *pParams)
         return;
     }
 
-    // record this time in our sample buffer
-    SAMPLE_ITEM(l_uiSampleCnt) = signalTime;
-    if (l_uiSampleCnt + 1 < cuiSampleBufSize)
-        l_uiSampleCnt++;
+    // record the difference between this signal time and the last one in our delta buffer
+    if (!l_bRecording)
+    {
+        l_bRecording = true;
+        l_uiLastSignalTime = signalTime;
+    }
+    else
+    {
+        uint32_t uiDelta = signalTime - l_uiLastSignalTime;
+        l_uiLastSignalTime = signalTime;
+        if (l_uiDeltaPos + 1 < cuiDeltaBufSize)
+        {
+            if (uiDelta < 32768)
+            {
+                DELTA_ITEM(l_uiDeltaPos) = (uint16_t) uiDelta;
+                l_uiDeltaPos++;
+            }
+            else
+            {
+                DELTA_ITEM(l_uiDeltaPos) = (uint16_t) (uiDelta >> 16) | 0x8000;
+                DELTA_ITEM(l_uiDeltaPos + 1) = (uint16_t) (uiDelta & 0xffff);
+                l_uiDeltaPos += 2;
+            }
+            l_uiDeltaCnt++;
+        }
+    }
 
     MCPWM0.int_clr.val = mcpwm_intr_status;
 }
