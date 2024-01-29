@@ -8,6 +8,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <map>
+
 #include <driver/timer.h>
 #include <driver/mcpwm.h>
 #include <soc/mcpwm_struct.h>
@@ -562,6 +564,86 @@ void loop()
         // turn off the motor
         gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
         gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+
+        // calculate histogram
+        std::map<uint32_t, uint32_t> mapCountByWavelen;
+        std::map<uint32_t, float>    mapSumByWavelen;
+        for (uint32_t ui = 1; ui < l_uiSampleCnt; ui++)
+        {
+            const float fWavelen = (SAMPLE_ITEM(ui) - SAMPLE_ITEM(ui-1)) / 80.0f;
+            const uint32_t uiWavelen = floorf(fWavelen + 0.5f);
+            if (mapCountByWavelen.count(uiWavelen) == 0)
+            {
+                mapCountByWavelen.insert(std::make_pair(uiWavelen, 1));
+                mapSumByWavelen.insert(std::make_pair(uiWavelen, fWavelen));
+            }
+            else
+            {
+                mapCountByWavelen[uiWavelen]++;
+                mapSumByWavelen[uiWavelen] += fWavelen;
+            }
+        }
+        
+        // calculate average of each bin
+        std::map<uint32_t, float>    mapAvgByWavelen;
+        std::map<uint32_t, float>    mapVarByWavelen;
+        for (std::map<uint32_t,uint32_t>::iterator it = mapCountByWavelen.begin(); it != mapCountByWavelen.end(); ++it)
+        {
+            const uint32_t uiWavelen = it->first;
+            mapAvgByWavelen.insert(std::make_pair(uiWavelen, mapSumByWavelen[uiWavelen] / it->second));
+            mapVarByWavelen.insert(std::make_pair(uiWavelen, 0.0f));
+        }
+
+        // calculate variance of each bin
+        for (uint32_t ui = 1; ui < l_uiSampleCnt; ui++)
+        {
+            const float fWavelen = (SAMPLE_ITEM(ui) - SAMPLE_ITEM(ui-1)) / 80.0f;
+            const uint32_t uiWavelen = floorf(fWavelen + 0.5f);
+            const float fDiff = fWavelen - mapAvgByWavelen[uiWavelen];
+            mapVarByWavelen[uiWavelen] += fDiff * fDiff;
+        }
+        for (std::map<uint32_t,uint32_t>::iterator it = mapCountByWavelen.begin(); it != mapCountByWavelen.end(); ++it)
+        {
+            const uint32_t uiWavelen = it->first;
+            mapVarByWavelen[uiWavelen] /= it->second;
+        }
+
+        // print statistics
+        Serial.write("Pulse Distance  Count   Average   Variance\r\n");
+        for (std::map<uint32_t,uint32_t>::iterator it = mapCountByWavelen.begin(); it != mapCountByWavelen.end(); ++it)
+        {
+            const uint32_t uiWavelen = it->first;
+            const uint32_t uiCount = it->second;
+            const float fAverage = mapAvgByWavelen[uiWavelen];
+            const float fVariance = mapVarByWavelen[uiWavelen];
+            Serial.printf("     %06u us  %5u   %.3f us  %.5f us\r\n", uiWavelen, uiCount, fAverage, fVariance);
+        }
+
+        // detect track encoding
+        uint32_t auiCountByWavelen[10];
+        for (uint32_t ui = 0; ui < 10; ui++)
+        {
+            if (mapCountByWavelen.count(ui) == 0)
+                auiCountByWavelen[ui] = 0;
+            else
+                auiCountByWavelen[ui] = mapCountByWavelen[ui];
+        }
+        if (l_uiSampleCnt > 1)
+        {
+            if ((float) (auiCountByWavelen[2] + auiCountByWavelen[3] + auiCountByWavelen[4]) / (l_uiSampleCnt - 1) > 0.9f)
+            {
+                Serial.write("High Density MFM track detected.\r\n");
+            }
+            if ((float) (auiCountByWavelen[4] + auiCountByWavelen[6] + auiCountByWavelen[8]) / (l_uiSampleCnt - 1) > 0.9f)
+            {
+                Serial.write("Double Density MFM track detected.\r\n");
+            }
+            else if ((float) (auiCountByWavelen[3] + auiCountByWavelen[5] + auiCountByWavelen[8]) / (l_uiSampleCnt - 1) > 0.9f)
+            {
+                Serial.write("Double Density GCR track detected.\r\n");
+            }
+        }
+        
     }
     else
     {
