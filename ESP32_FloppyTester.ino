@@ -18,6 +18,9 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/xtensa_timer.h"
+
+#include "esp_intr_alloc.h"
 
 #include "DecoderMFM.h"
 
@@ -553,6 +556,8 @@ void loop()
         // wait 0.5 seconds for speed to settle
         delay(TIME_MOTOR_SETTLE);
 
+        ESP_INTR_DISABLE(XT_TIMER_INTNUM);
+
         // wait until index pulse arrives
         do {} while (gpio_get_level(FDC_INDEX) == 0);
 
@@ -573,6 +578,8 @@ void loop()
 
         // disable the signal capture
         mcpwm_capture_disable(MCPWM_UNIT_0, MCPWM_SELECT_CAP1);
+
+        ESP_INTR_ENABLE(XT_TIMER_INTNUM);
 
         // print some statistics
         if (!l_bRecording)
