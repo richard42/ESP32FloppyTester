@@ -19,6 +19,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "DecoderMFM.h"
+
 //////////////////////////////////////////////////////////////////////////
 // Definitions
 
@@ -666,6 +668,8 @@ void loop()
             if ((float) (auiCountByWavelen[4] + auiCountByWavelen[6] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
             {
                 Serial.write("Double Density MFM track detected.\r\n");
+                DecoderMFM decoder((const uint16_t **) l_pusDeltaBuffers, l_uiDeltaPos);
+                decoder.DecodeTrack(true);
             }
             else if ((float) (auiCountByWavelen[3] + auiCountByWavelen[5] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
             {
@@ -686,7 +690,8 @@ void loop()
 static void IRAM_ATTR onSignalEdge(void *pParams)
 {
     // read interrupt status
-    uint32_t mcpwm_intr_status = MCPWM0.int_st.val;
+    const uint32_t mcpwm_intr_status = MCPWM0.int_st.val;
+    MCPWM0.int_clr.val = mcpwm_intr_status;
     
     // get the latched 80MHz time
     uint32_t signalTime = 0;
@@ -700,7 +705,6 @@ static void IRAM_ATTR onSignalEdge(void *pParams)
     }
     else
     {
-        MCPWM0.int_clr.val = mcpwm_intr_status;
         return;
     }
 
@@ -730,8 +734,6 @@ static void IRAM_ATTR onSignalEdge(void *pParams)
             l_uiDeltaCnt++;
         }
     }
-
-    MCPWM0.int_clr.val = mcpwm_intr_status;
 }
 
 //////////////////////////////////////////////////////////////////////////

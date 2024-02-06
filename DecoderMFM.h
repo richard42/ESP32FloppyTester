@@ -1,0 +1,31 @@
+//////////////////////////////////////////////////////////////////////////
+// ESP32_FloppyTester
+// DecoderMFM.h
+// 
+// Copyright (C) 2024, All Rights Reserved.
+//
+// Author: Richard Goedeken
+// Date:   2024/01/28
+
+#include <stdint.h>
+
+class DecoderMFM
+{
+public:
+    DecoderMFM(const uint16_t *pusDeltaBuffers[], uint32_t uiDeltaMax);
+    ~DecoderMFM();
+
+    // accessors
+
+    // modifiers
+    void DecodeTrack(bool bDebugPrint);
+
+    // private methods
+private:
+    void DecodeSegment(bool bDebugPrint, uint32_t uiStartIdx, uint32_t uiEndIdx);
+
+    // member variables
+private:
+    const uint16_t  **m_pusDeltaBuffers;
+    const uint32_t    m_uiDeltaMax;
+};
