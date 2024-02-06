@@ -22,10 +22,11 @@ public:
 
     // private methods
 private:
-    void DecodeSegment(bool bDebugPrint, uint32_t uiStartIdx, uint32_t uiEndIdx);
+    uint32_t ReadSectorBytes(uint32_t uiStartIdx);
 
     // member variables
 private:
     const uint16_t  **m_pusDeltaBuffers;
     const uint32_t    m_uiDeltaMax;
+    uint32_t          m_uiSectorDataLength;
 };
