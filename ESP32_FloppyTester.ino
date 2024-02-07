@@ -75,7 +75,7 @@ void test_input(void);
 void test_output(void);
 void detect_pins(void);
 void detect_rpm(void);
-bool seek_home(void);
+bool seek_home(bool bLeaveMotorRunning = false);
 void seek_test(void);
 void seek_track(int iTargetTrack);
 void test_read(void);
@@ -88,9 +88,10 @@ std::string command_input(void);
 // Local variables
 
 static bool         l_bGPIOInit = false;
-static int          l_iDriveSelect = FDC_SEL10;
-static int          l_iDriveMotor = FDC_SEL16;
-static int          l_iCurrentTrack = -1;
+static int          l_iPinSelect = FDC_SEL10;
+static int          l_iPinMotor = FDC_SEL16;
+static int          l_iDriveTrack = -1;
+static bool         l_bDriveMotorOn = false;
 
 const uint32_t            cuiDeltaBufSize = 65536;
 static volatile bool      l_bRecording = false;
@@ -228,13 +229,25 @@ void loop()
     }
     else if (strInput == "motor on")
     {
-        gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
-        gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
+        if (l_iPinSelect == -1 || l_iPinMotor == -1)
+        {
+            Serial.write("Error: select/motor pin(s) not set. Use DETECT PINS\r\n");
+            return;
+        }
+        gpio_set_level((gpio_num_t) l_iPinSelect, 1);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 1);
+        l_bDriveMotorOn = true;
     }
     else if (strInput == "motor off")
     {
-        gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-        gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+        if (l_iPinSelect == -1 || l_iPinMotor == -1)
+        {
+            Serial.write("Error: select/motor pin(s) not set. Use DETECT PINS\r\n");
+            return;
+        }
+        gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+        l_bDriveMotorOn = false;
     }
     else if (strInput == "detect pins")
     {
@@ -267,12 +280,12 @@ void loop()
                 Serial.printf("Error: invalid target track '%i' specified.\r\n", iTargetTrack);
                 return;
             }
-            if (l_iCurrentTrack == -1)
+            if (l_iDriveTrack == -1)
             {
                 Serial.write("Error: track position not known. You must use \"TEST SEEK\" first.\r\n");
                 return;
             }
-            if (l_iCurrentTrack == iTargetTrack)
+            if (l_iDriveTrack == iTargetTrack)
             {
                 Serial.printf("Error: drive is already at track %i.\r\n", iTargetTrack);
                 return;
@@ -404,20 +417,23 @@ void detect_pins(void)
         else
         {
             Serial.write("Detection successful.\r\n");
-            l_iDriveSelect = iDriveSelect;
-            l_iDriveMotor = iDriveMotor;
+            l_iPinSelect = iDriveSelect;
+            l_iPinMotor = iDriveMotor;
         }
     }
 }
 
 void detect_rpm(void)
 {
-    // turn on the motor
-    gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
-    gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
-    
-    // wait 0.5 seconds for speed to settle
-    delay(TIME_MOTOR_SETTLE);
+    if (!l_bDriveMotorOn)
+    {
+        // turn on the motor
+        gpio_set_level((gpio_num_t) l_iPinSelect, 1);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 1);
+        
+        // wait 0.5 seconds for speed to settle
+        delay(TIME_MOTOR_SETTLE);
+    }
 
     // reset the sample buffer and enable the index pulse edge capture
     l_bRecording = false;
@@ -481,10 +497,13 @@ void detect_rpm(void)
     // disable interrupt
     mcpwm_capture_disable(MCPWM_UNIT_0, MCPWM_SELECT_CAP0);
 
-    // turn off the motor
-    gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-    gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
-
+    // turn off the motor, if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+    }
+    
     // discard all remaining serial data
     delay(100);
     while (Serial.available() > 0)
@@ -493,19 +512,23 @@ void detect_rpm(void)
     }
 }
 
-bool seek_home(void)
+bool seek_home(bool bLeaveMotorRunning)
 {
-    // turn on the motor
-    gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
-    gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
     // set direction to seek out (towards track 0)
     gpio_set_level(FDC_DIR, 0);
     
-    // wait 0.5 seconds for speed to settle
-    delay(TIME_MOTOR_SETTLE);
-
+    // turn on the motor, if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 1);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 1);
+        
+        // wait 0.5 seconds for speed to settle
+        delay(TIME_MOTOR_SETTLE);
+    }
+    
     // search for track zero
-    l_iCurrentTrack = -1;
+    l_iDriveTrack = -1;
     int iMoved = 0;
     portDISABLE_INTERRUPTS();
     for (; iMoved < 86; iMoved++)
@@ -518,22 +541,33 @@ bool seek_home(void)
         delay_micros(4999);
     }
     portENABLE_INTERRUPTS();
+
+    // bail out if we never found track 0
     if (iMoved == 86)
     {
         Serial.write("Error: head stepped 86 tracks but TRACK0 signal never became active.\r\n");
-        gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-        gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+        gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+        l_bDriveMotorOn = false;
         return false;
     }
+
+    // turn the motor off, if necessary
+    if (!l_bDriveMotorOn && !bLeaveMotorRunning)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+    }
+
     Serial.printf("Found track 0 after stepping %.1f tracks.\r\n", (float) iMoved);
-    l_iCurrentTrack = 0;
+    l_iDriveTrack = 0;
     return true;
 }
 
 void seek_test(void)
 {
     // start at track 0
-    if (!seek_home())
+    if (!seek_home(true))
         return;
 
     // try seeking back and forth a few times
@@ -559,8 +593,8 @@ void seek_test(void)
         if (iMoved != iTracks)
         {
             Serial.write("Error: head stepped %.1f tracks in, but TRACK0 signal was still active.\r\n", (float) iMoved);
-            gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-            gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+            gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+            gpio_set_level((gpio_num_t) l_iPinMotor, 0);
             return;
         }
         gpio_set_level(FDC_DIR, 0);
@@ -580,50 +614,56 @@ void seek_test(void)
         if (iMoved < iTracks)
         {
             Serial.printf("Error: TRACK0 signal was asserted after stepping out %.1f of %i tracks.\r\n", (float) iMoved, iTracks);
-            gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-            gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+            gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+            gpio_set_level((gpio_num_t) l_iPinMotor, 0);
             return;
         }
         if (!gpio_get_level(FDC_TRK00))
         {
             Serial.printf("Error: TRACK0 signal was not asserted after stepping inward and back out %i tracks.\r\n", iTracks);
-            gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-            gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+            gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+            gpio_set_level((gpio_num_t) l_iPinMotor, 0);
             return;
         }
         vTaskDelay(200);
     }
 
+    // turn off the motor if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+    }
+
     // all good
     Serial.write("All tests successful.\r\n");
-    l_iCurrentTrack = 0;
-    
-    // turn off the motor
-    gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-    gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+    l_iDriveTrack = 0;
 }
 
 void seek_track(int iTargetTrack)
 {
-    // turn on the motor
-    gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
-    gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
-    
     // set direction to seek
     int iTracksToMove = 0;
-    if (iTargetTrack < l_iCurrentTrack)
+    if (iTargetTrack < l_iDriveTrack)
     {
         gpio_set_level(FDC_DIR, 0);
-        iTracksToMove = l_iCurrentTrack - iTargetTrack;
+        iTracksToMove = l_iDriveTrack - iTargetTrack;
     }
     else
     {
         gpio_set_level(FDC_DIR, 1);
-        iTracksToMove = iTargetTrack - l_iCurrentTrack;
+        iTracksToMove = iTargetTrack - l_iDriveTrack;
     }
     
-    // wait 0.5 seconds for speed to settle
-    delay(TIME_MOTOR_SETTLE);
+    // turn on the motor if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 1);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 1);
+    
+        // wait 0.5 seconds for speed to settle
+        delay(TIME_MOTOR_SETTLE);
+    }
 
     // move to the target track
     int iMoved = 0;
@@ -639,26 +679,31 @@ void seek_track(int iTargetTrack)
     if (iTargetTrack == 0 && !gpio_get_level(FDC_TRK00))
     {
         Serial.write("Error: moved to track 0 but TRACK0 signal is not active.\r\n");
-        l_iCurrentTrack = -1;
+        l_iDriveTrack = -1;
     }
     else
     {
-        l_iCurrentTrack = iTargetTrack;
+        l_iDriveTrack = iTargetTrack;
     }
 
-    // turn off the motor
-    gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-    gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+    // turn off the motor if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+    }
 }
 
 void track_read(void)
 {
-    // turn on the motor
-    gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
-    gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
-    
-    // wait 0.5 seconds for speed to settle
-    delay(TIME_MOTOR_SETTLE);
+    // turn on the motor if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 1);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 1);
+        // wait 0.5 seconds for speed to settle
+        delay(TIME_MOTOR_SETTLE);
+    }
 
     ESP_INTR_DISABLE(XT_TIMER_INTNUM);
 
@@ -691,9 +736,12 @@ void track_read(void)
     else
         Serial.printf("Track read complete; recorded %i flux transitions.\r\n", l_uiDeltaCnt + 1);
 
-    // turn off the motor
-    gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-    gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+    // turn off the motor if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+    }
 
     // calculate histogram
     std::map<uint32_t, uint32_t> mapCountByWavelen;
