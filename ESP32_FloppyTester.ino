@@ -73,9 +73,10 @@ static void IRAM_ATTR onSignalEdge(void *pParams);
 void display_help(void);
 void test_input(void);
 void test_output(void);
-void detect(void);
-void test_rpm(void);
-void test_seek(void);
+void detect_pins(void);
+void detect_rpm(void);
+bool seek_home(void);
+void seek_test(void);
 void seek_track(int iTargetTrack);
 void test_read(void);
 
@@ -235,46 +236,53 @@ void loop()
         gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
         gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
     }
-    else if (strInput == "detect")
+    else if (strInput == "detect pins")
     {
-        detect();
+        detect_pins();
     }
-    else if (strInput == "test rpm")
+    else if (strInput == "detect rpm")
     {
-        test_rpm();
-    }
-    else if (strInput == "test seek")
-    {
-        test_seek();
+        detect_rpm();
     }
     else if (strInput.find("seek ") == 0)
     {
-        int iTargetTrack;
-        if (sscanf(strInput.c_str() + 5, "%d", &iTargetTrack) != 1)
+        if (strcmp(strInput.c_str() + 5, "home") == 0)
         {
-            Serial.printf("Error: track number not found in command '%s'.\r\n", strInput.c_str());
-            return;
+            seek_home();
         }
-        if (iTargetTrack < 0 || iTargetTrack > 85)
+        else if (strcmp(strInput.c_str() + 5, "test") == 0)
         {
-            Serial.printf("Error: invalid target track '%i' specified.\r\n", iTargetTrack);
-            return;
+            seek_test();
         }
-        if (l_iCurrentTrack == -1)
+        else
         {
-            Serial.write("Error: track position not known. You must use \"TEST SEEK\" first.\r\n");
-            return;
+            int iTargetTrack;
+            if (sscanf(strInput.c_str() + 5, "%d", &iTargetTrack) != 1)
+            {
+                Serial.printf("Error: track number not found in command '%s'.\r\n", strInput.c_str());
+                return;
+            }
+            if (iTargetTrack < 0 || iTargetTrack > 85)
+            {
+                Serial.printf("Error: invalid target track '%i' specified.\r\n", iTargetTrack);
+                return;
+            }
+            if (l_iCurrentTrack == -1)
+            {
+                Serial.write("Error: track position not known. You must use \"TEST SEEK\" first.\r\n");
+                return;
+            }
+            if (l_iCurrentTrack == iTargetTrack)
+            {
+                Serial.printf("Error: drive is already at track %i.\r\n", iTargetTrack);
+                return;
+            }
+            seek_track(iTargetTrack);
         }
-        if (l_iCurrentTrack == iTargetTrack)
-        {
-            Serial.printf("Error: drive is already at track %i.\r\n", iTargetTrack);
-            return;
-        }
-        seek_track(iTargetTrack);
     }
-    else if (strInput == "test read")
+    else if (strInput == "track read")
     {
-        test_read();
+        track_read();
     }
     else
     {
@@ -291,13 +299,14 @@ void display_help(void)
     Serial.write("    HELP         - display this help message.\r\n");
     Serial.write("    TEST INPUT   - activate input test mode, and print level changes on input lines.\r\n");
     Serial.write("    TEST OUTPUT  - activate output test mode, and drive output pins with binary pin numbers.\r\n");
-    Serial.write("    DETECT       - toggle select lines to determine drive wiring/jumper setup.\r\n");
+    Serial.write("    DETECT PINS  - toggle select lines to determine drive wiring/jumper setup.\r\n");
+    Serial.write("    DETECT RPM   - spin up motor and calculate spindle speed from index pulses.\r\n");
     Serial.write("    MOTOR ON/OFF - activate or de-activate motor 1\r\n");
-    Serial.write("    TEST RPM     - spin up motor and calculate spindle speed from index pulses.\r\n");
-    Serial.write("    TEST SEEK    - test head seeking and track 0 detection.\r\n");
-    Serial.write("    TEST READ    - read current track and print decoded data summary (requires formatted disk).\r\n");
-    Serial.write("    TEST ERASE   - erase current track and validate erasure (destroys data on disk).\r\n");
+    Serial.write("    SEEK HOME    - move to track 0.\r\n");
+    Serial.write("    SEEK TEST    - test head seeking and track 0 detection.\r\n");
     Serial.write("    SEEK <X>     - seek head to track X.\r\n");
+    Serial.write("    TRACK READ   - read current track and print decoded data summary (requires formatted disk).\r\n");
+    Serial.write("    TRACK ERASE  - erase current track and validate erasure (destroys data on disk).\r\n");
     Serial.write("\r\n");
 }
 
@@ -355,7 +364,7 @@ void test_output(void)
     //REG_WRITE(GPIO_OUT1_W1TC_REG, (1 << (FDC_SEL06-32)));
 }
 
-void detect(void)
+void detect_pins(void)
 {
     int iDriveSelect = -1;
     int iDriveMotor = -1;
@@ -401,7 +410,7 @@ void detect(void)
     }
 }
 
-void test_rpm(void)
+void detect_rpm(void)
 {
     // turn on the motor
     gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
@@ -484,7 +493,7 @@ void test_rpm(void)
     }
 }
 
-void test_seek(void)
+bool seek_home(void)
 {
     // turn on the motor
     gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
@@ -514,9 +523,18 @@ void test_seek(void)
         Serial.write("Error: head stepped 86 tracks but TRACK0 signal never became active.\r\n");
         gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
         gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
-        return;
+        return false;
     }
     Serial.printf("Found track 0 after stepping %.1f tracks.\r\n", (float) iMoved);
+    l_iCurrentTrack = 0;
+    return true;
+}
+
+void seek_test(void)
+{
+    // start at track 0
+    if (!seek_home())
+        return;
 
     // try seeking back and forth a few times
     vTaskDelay(200);
@@ -526,8 +544,9 @@ void test_seek(void)
         Serial.printf("Seeking to track %i and back.\r\n", iTracks);
         gpio_set_level(FDC_DIR, 1);
         vTaskDelay(1);
+        int iMoved = 0;
         portDISABLE_INTERRUPTS();
-        for (iMoved = 0; iMoved < iTracks; iMoved++)
+        for (; iMoved < iTracks; iMoved++)
         {
             gpio_set_level(FDC_STEP, 1);
             delay_micros(1);
@@ -632,7 +651,7 @@ void seek_track(int iTargetTrack)
     gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
 }
 
-void test_read(void)
+void track_read(void)
 {
     // turn on the motor
     gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
