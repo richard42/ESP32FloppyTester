@@ -25,6 +25,7 @@ DecoderMFM::DecoderMFM(const uint16_t *pusDeltaBuffers[], uint32_t uiDeltaMax)
  : m_pusDeltaBuffers(pusDeltaBuffers)
  , m_uiDeltaMax(uiDeltaMax)
  , m_uiSectorDataLength(0)
+ , m_usCurrentCRC(0xffff)
 {
 }
 
@@ -220,25 +221,47 @@ uint32_t DecoderMFM::ReadSectorBytes(uint32_t uiStartIdx)
                 Serial.printf("[Sector read error: invalid address mark 0x%02x]\r\n", ucBytes[0]);
                 return ui + 1;
             }
+            // initialize CRC calculation
+            uint8_t ucFirstBytes[3] = { 0xa1, 0xa1, 0xa1 };
+            m_usCurrentCRC = 0xffff;
+            advance_crc16(ucFirstBytes, 3);
         }
         // handle block completion
         if (uiExpectedBytes > 0 && uiBytesRead == uiExpectedBytes)
         {
+            // calculate CRC
+            advance_crc16(ucBytes, uiBytesRead);
             if (ucBytes[0] == 0xfe)
             {
                 // Sector ID record
-                Serial.printf("Sector ID: Cylinder %i, Side %i, Sector %i, CRC=%04x\r\n", ucBytes[1], ucBytes[2], ucBytes[3], (ucBytes[5] << 8) + ucBytes[6]);
+                Serial.printf("Sector ID: Cylinder %i, Side %i, Sector %i, CRC=%04x (%s)\r\n", ucBytes[1], ucBytes[2], ucBytes[3],
+                              (ucBytes[5] << 8) + ucBytes[6], (m_usCurrentCRC == 0 ? "GOOD" : "BAD"));
                 m_uiSectorDataLength = 1 << (7 + ucBytes[4]);
                 return ui + 1;
             }
             else if (ucBytes[0] == 0xfb)
             {
                 // Sector data
-                Serial.printf("Sector data: %i bytes with CRC=%04x\r\n", m_uiSectorDataLength, (ucBytes[513] << 8) + ucBytes[514]);
+                Serial.printf("Sector data: %i bytes with CRC=%04x (%s)\r\n", m_uiSectorDataLength,
+                              (ucBytes[m_uiSectorDataLength+1] << 8) + ucBytes[m_uiSectorDataLength+2], (m_usCurrentCRC == 0 ? "GOOD" : "BAD"));
                 m_uiSectorDataLength = 0;
                 return ui + 1;
             }
         }
     }
-  
+}
+
+//////////////////////////////////////////////////////////////////////////
+// private helper methods
+
+void DecoderMFM::advance_crc16(const uint8_t* data_p, uint32_t length)
+{
+    unsigned char x;
+
+    while (length--)
+    {
+        x = m_usCurrentCRC >> 8 ^ *data_p++;
+        x ^= x>>4;
+        m_usCurrentCRC = (m_usCurrentCRC << 8) ^ ((unsigned short)(x << 12)) ^ ((unsigned short)(x <<5)) ^ ((unsigned short)x);
+    }
 }

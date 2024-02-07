@@ -23,10 +23,12 @@ public:
     // private methods
 private:
     uint32_t ReadSectorBytes(uint32_t uiStartIdx);
+    void advance_crc16(const uint8_t* data_p, uint32_t length);
 
     // member variables
 private:
     const uint16_t  **m_pusDeltaBuffers;
     const uint32_t    m_uiDeltaMax;
     uint32_t          m_uiSectorDataLength;
+    uint16_t          m_usCurrentCRC;
 };
