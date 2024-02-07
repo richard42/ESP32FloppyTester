@@ -62,11 +62,25 @@ int l_iPinFDDbySignal[40];
 //////////////////////////////////////////////////////////////////////////
 // Forward declarations
 
-static void IRAM_ATTR onSignalEdge(void *pParams);
-
+// initialization helpers
 void gpio_reset(void);
 void gpio_init(void);
 
+// ISR
+static void IRAM_ATTR onSignalEdge(void *pParams);
+
+// command functions
+void display_help(void);
+void test_input(void);
+void test_output(void);
+void detect(void);
+void test_rpm(void);
+void test_seek(void);
+void seek_track(int iTargetTrack);
+void test_read(void);
+
+// generic helpers
+void delay_micros(uint32_t uiMicros);
 std::string command_input(void);
 
 //////////////////////////////////////////////////////////////////////////
@@ -141,6 +155,45 @@ void setup()
     TIMERG1.wdt_wprotect = 0; // Lock timer config.
 }
 
+void gpio_reset(void)
+{
+    for (int i = 0; i < l_iNumInputs; i++)
+    {
+        gpio_reset_pin(l_aiPinsInput[i]);
+    }
+    for (int i = 0; i < l_iNumOutputs; i++)
+    {
+        gpio_reset_pin(l_aiPinsOutput[i]);
+    }
+    
+    l_bGPIOInit = false;
+}
+
+void gpio_init(void)
+{
+    // Set pin I/O modes
+    for (int i = 0; i < l_iNumInputs; i++)
+    {
+        gpio_set_pull_mode(l_aiPinsInput[i], GPIO_FLOATING);
+        gpio_set_direction(l_aiPinsInput[i], GPIO_MODE_INPUT);
+    }
+    for (int i = 0; i < l_iNumOutputs; i++)
+    {
+        gpio_set_pull_mode(l_aiPinsOutput[i], GPIO_FLOATING);
+        gpio_set_level(l_aiPinsOutput[i], 0);
+        gpio_set_direction(l_aiPinsOutput[i], GPIO_MODE_OUTPUT);
+    }
+
+    // we will use the MCPWM capture system to record timestamps of signal edges for the INDEX and RDATA lines
+    mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM_CAP_0, FDC_INDEX);
+    mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM_CAP_1, FDC_RDATA);
+
+    l_bGPIOInit = true;
+}
+
+//////////////////////////////////////////////////////////////////////////
+// Main loop - command processor
+
 void loop()
 {
     // put your main code here, to run repeatedly:
@@ -162,85 +215,15 @@ void loop()
     // parse command
     if (strInput == "help")
     {
-        Serial.write("\r\nESP32_FloppyTester commands:\r\n");
-        Serial.write("    HELP         - display this help message.\r\n");
-        Serial.write("    RESET        - de-activate floppy drive interface.\r\n");
-        Serial.write("    STATUS       - show current hardware status.\r\n");
-        Serial.write("    TEST INPUT   - activate input test mode, and print level changes on input lines.\r\n");
-        Serial.write("    TEST OUTPUT  - activate output test mode, and drive output pins with binary pin numbers.\r\n");
-        Serial.write("    DETECT       - toggle select lines to determine drive wiring/jumper setup.\r\n");
-        Serial.write("    MOTOR ON/OFF - activate or de-activate motor 1\r\n");
-        Serial.write("    TEST RPM     - spin up motor and calculate spindle speed from index pulses.\r\n");
-        Serial.write("    TEST SEEK    - test head seeking and track 0 detection.\r\n");
-        Serial.write("    TEST READ    - read current track and print decoded data summary (requires formatted disk).\r\n");
-        Serial.write("    TEST ERASE   - erase current track and validate erasure (destroys data on disk).\r\n");
-        Serial.write("    SEEK <X>     - seek head to track X.\r\n");
-        Serial.write("\r\n");
-    }
-    else if (strInput == "reset")
-    {
-        gpio_init();
-        return;
-    }
-    else if (strInput == "status")
-    {
-        if (l_bGPIOInit)
-            Serial.write("Floppy drive interface is activated.\r\n");
-        else
-            Serial.write("Floppy drive interface is in high-impedance state.\r\n");
-        return;
+        display_help();
     }
     else if (strInput == "test input")
     {
-        // repeatedly poll the input lines and print messages for any changes
-        char chLineState[l_iNumInputs];
-        memset(chLineState, -1, l_iNumInputs);
-        while (Serial.available() == 0)
-        {
-            for (int i = 0; i < l_iNumInputs; i++)
-            {
-                const int iESP32PinIdx = l_aiPinsInput[i];
-                const int iNewState = gpio_get_level((gpio_num_t) iESP32PinIdx);
-                const int iFDDPinIdx = l_iPinFDDbySignal[iESP32PinIdx];
-                if (chLineState[i] != iNewState)
-                {
-                    Serial.printf("FDD pin %i changed state to %s\r\n", iFDDPinIdx, iNewState ? "HIGH" : "LOW");
-                    chLineState[i] = iNewState;
-                }
-            }
-            vTaskDelay(1);
-        }
+        test_input();
     }
     else if (strInput == "test output")
     {
-        // toggle the output lines with a 100khz pattern with 8 bits, outputting the
-        // bit pattern of the pin number on each pin, until a new character is received
-        // via the serial port
-        while (Serial.available() == 0)
-        {
-            uint64_t clockTime = 0;
-            timer_get_counter_value(TIMER_GROUP_0, TIMER_0, &clockTime);
-            const int bitIdx = (clockTime / 100) & 7;
-            const int bitTime = (clockTime % 100);
-            for (int i = 0; i < l_iNumOutputs; i++)
-            {
-                const int iESP32PinIdx = l_aiPinsOutput[i];
-                const int iFDDPinIdx = l_iPinFDDbySignal[iESP32PinIdx];
-                const int iBitValue = (((iFDDPinIdx << bitIdx) & 128) && (bitTime < 90)) ? 1 : 0;
-                gpio_set_level((gpio_num_t) iESP32PinIdx, iBitValue);
-            }
-        }
-        // set all output lines low
-        for (int i = 0; i < l_iNumOutputs; i++)
-        {
-            gpio_set_level((gpio_num_t) l_aiPinsOutput[i], 0);
-        }
-        // here is a much faster way to set and clear GPIO pins
-        //portDISABLE_INTERRUPTS();
-        //REG_WRITE(GPIO_OUT_W1TS_REG, (1 << FDC_SEL10));
-        //REG_WRITE(GPIO_OUT_W1TC_REG, (1 << FDC_SEL10));
-        //REG_WRITE(GPIO_OUT1_W1TS_REG, (1 << (FDC_SEL06-32)));
-        //REG_WRITE(GPIO_OUT1_W1TC_REG, (1 << (FDC_SEL06-32)));
+        test_output();
     }
     else if (strInput == "motor on")
     {
@@ -254,229 +237,15 @@ void loop()
     }
     else if (strInput == "detect")
     {
-        int iDriveSelect = -1;
-        int iDriveMotor = -1;
-        const gpio_num_t aiSelectPins[5] = { FDC_SEL06, FDC_SEL10, FDC_SEL12, FDC_SEL14, FDC_SEL16 };
-        bool bFinished = true;
-        for (int i = 0; i < 5; i++)
-        {
-            const gpio_num_t iThisPin = aiSelectPins[i];
-            gpio_set_level(iThisPin, 1);
-            Serial.printf("Select pin %i/5 activated. Press key for drive state: (M)otor on, (L)ight on, (N)othing on, (A)bort?", i+1);
-            char chKey = 0;
-            do
-            {
-                if (Serial.available() == 0)
-                {
-                    vTaskDelay(50);      // wait for 50 milliseconds
-                    continue;
-                }
-                chKey = Serial.read() & ~32;
-            } while (chKey != 'M' && chKey != 'L' && chKey != 'N' && chKey != 'A');
-            Serial.printf("%c\r\n", chKey);
-            gpio_set_level(iThisPin, 0);
-            if (chKey == 'M')
-                iDriveMotor = iThisPin;
-            if (chKey == 'L')
-                iDriveSelect = iThisPin;
-            if (chKey =='A')
-                break;
-            bFinished = (i == 4);
-        }
-        if (bFinished)
-        {
-            if (iDriveSelect == -1)
-                Serial.write("Error: no drive select line found.\r\n");
-            else if (iDriveMotor == -1)
-                Serial.write("Error: no motor on line found.\r\n");
-            else
-            {
-                Serial.write("Detection successful.\r\n");
-                l_iDriveSelect = iDriveSelect;
-                l_iDriveMotor = iDriveMotor;
-            }
-        }
+        detect();
     }
     else if (strInput == "test rpm")
     {
-        // turn on the motor
-        gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
-        gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
-        
-        // wait 0.5 seconds for speed to settle
-        delay(TIME_MOTOR_SETTLE);
-
-        // reset the sample buffer and enable the index pulse edge capture
-        l_bRecording = false;
-        l_uiLastSignalTime = 0;
-        l_uiDeltaPos = 0;
-        l_uiDeltaCnt = 0;
-        mcpwm_capture_enable(MCPWM_UNIT_0, MCPWM_SELECT_CAP0, MCPWM_POS_EDGE, 0);
-        MCPWM0.int_ena.val = CAP0_INT_EN;
-        mcpwm_isr_register(MCPWM_UNIT_0, onSignalEdge, NULL, ESP_INTR_FLAG_IRAM, NULL);
- 
-        // print out the calculated speed once per second, until interrupted by user
-        bool bStarted = false;
-        uint32_t uiSegmentDuration = 0;
-        uint32_t uiSegmentPulses = 0;
-        uint32_t uiDeltaReadPos = 0;
-        uint32_t uiIterations = 0;
-        while(Serial.available() == 0)
-        {
-            // delay to avoid burning the CPU
-            delay(100);
-            uiIterations++;
-            // check for end of buffer condition
-            if (l_uiDeltaPos + 4 >= cuiDeltaBufSize)
-            {
-                break;
-            }
-            // check for no index pulse
-            if (!l_bRecording && uiIterations >= 20)
-            {
-                Serial.write("Error: no index pulse found in 2 seconds.\r\n");
-                break;
-            }
-            // check for one-second window passed
-            while(uiDeltaReadPos < l_uiDeltaPos)
-            {
-                // get the next time delta from the buffer
-                uint32_t uiDelta = DELTA_ITEM(uiDeltaReadPos);
-                if (uiDelta & 0x8000)
-                {
-                    uiDeltaReadPos++;
-                    uiDelta = ((uiDelta & 0x7fff) << 16) + DELTA_ITEM(uiDeltaReadPos);
-                }
-                uiDeltaReadPos++;
-                // add it to our segment duration
-                uiSegmentDuration += uiDelta;
-                uiSegmentPulses++;
-                // print calculated RPM speed if the segment is over one second
-                if (uiSegmentDuration >= 80 * 1000 * 1000)
-                {
-                    double dRevTimeTicks = (double) uiSegmentDuration / uiSegmentPulses;
-                    double dRevTimeSecs = dRevTimeTicks / 80000000.0;
-                    double dRPM = (1.0 / dRevTimeSecs) * 60.0;
-                    Serial.printf("Drive speed: %.4lf rpm\r\n", dRPM);
-                    // advance the window to the next second
-                    uiSegmentDuration = 0;
-                    uiSegmentPulses = 0;
-                }
-            }
-        }
-
-        // disable interrupt
-        mcpwm_capture_disable(MCPWM_UNIT_0, MCPWM_SELECT_CAP0);
-
-        // turn off the motor
-        gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-        gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
-
-        // discard all remaining serial data
-        delay(100);
-        while (Serial.available() > 0)
-        {
-            Serial.read();
-        }
+        test_rpm();
     }
     else if (strInput == "test seek")
     {
-        // turn on the motor
-        gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
-        gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
-        // set direction to seek out (towards track 0)
-        gpio_set_level(FDC_DIR, 0);
-        
-        // wait 0.5 seconds for speed to settle
-        delay(TIME_MOTOR_SETTLE);
-
-        // search for track zero
-        l_iCurrentTrack = -1;
-        int iMoved = 0;
-        portDISABLE_INTERRUPTS();
-        for (; iMoved < 86; iMoved++)
-        {
-            if (gpio_get_level(FDC_TRK00))
-                break;
-            gpio_set_level(FDC_STEP, 1);
-            delay_micros(1);
-            gpio_set_level(FDC_STEP, 0);
-            delay_micros(4999);
-        }
-        portENABLE_INTERRUPTS();
-        if (iMoved == 86)
-        {
-            Serial.write("Error: head stepped 86 tracks but TRACK0 signal never became active.\r\n");
-            gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-            gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
-            return;
-        }
-        Serial.printf("Found track 0 after stepping %.1f tracks.\r\n", (float) iMoved);
-
-        // try seeking back and forth a few times
-        vTaskDelay(200);
-        for (int iDistance = 0; iDistance < 5; iDistance++)
-        {
-            const int iTracks = 5 * (1 << iDistance) - 1;
-            Serial.printf("Seeking to track %i and back.\r\n", iTracks);
-            gpio_set_level(FDC_DIR, 1);
-            vTaskDelay(1);
-            portDISABLE_INTERRUPTS();
-            for (iMoved = 0; iMoved < iTracks; iMoved++)
-            {
-                gpio_set_level(FDC_STEP, 1);
-                delay_micros(1);
-                gpio_set_level(FDC_STEP, 0);
-                delay_micros(4999);
-                if (gpio_get_level(FDC_TRK00))
-                    break;
-            }
-            portENABLE_INTERRUPTS();
-            if (iMoved != iTracks)
-            {
-                Serial.write("Error: head stepped %.1f tracks in, but TRACK0 signal was still active.\r\n", (float) iMoved);
-                gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-                gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
-                return;
-            }
-            gpio_set_level(FDC_DIR, 0);
-            vTaskDelay(200);
-            portDISABLE_INTERRUPTS();
-            for (iMoved = 0; iMoved < iTracks; )
-            {
-                gpio_set_level(FDC_STEP, 1);
-                delay_micros(1);
-                gpio_set_level(FDC_STEP, 0);
-                delay_micros(4999);
-                iMoved++;
-                if (gpio_get_level(FDC_TRK00))
-                    break;
-            }
-            portENABLE_INTERRUPTS();
-            if (iMoved < iTracks)
-            {
-                Serial.printf("Error: TRACK0 signal was asserted after stepping out %.1f of %i tracks.\r\n", (float) iMoved, iTracks);
-                gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-                gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
-                return;
-            }
-            if (!gpio_get_level(FDC_TRK00))
-            {
-                Serial.printf("Error: TRACK0 signal was not asserted after stepping inward and back out %i tracks.\r\n", iTracks);
-                gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-                gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
-                return;
-            }
-            vTaskDelay(200);
-        }
-
-        // all good
-        Serial.write("All tests successful.\r\n");
-        l_iCurrentTrack = 0;
-        
-        // turn off the motor
-        gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-        gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+        test_seek();
     }
     else if (strInput.find("seek ") == 0)
     {
@@ -501,193 +270,503 @@ void loop()
             Serial.printf("Error: drive is already at track %i.\r\n", iTargetTrack);
             return;
         }
+        seek_track(iTargetTrack);
+    }
+    else if (strInput == "test read")
+    {
+        test_read();
+    }
+    else
+    {
+        Serial.write("Unknown command.\r\n");
+    }
+}
 
-        // turn on the motor
-        gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
-        gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
-        
-        // set direction to seek
-        int iTracksToMove = 0;
-        if (iTargetTrack < l_iCurrentTrack)
+/////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Command functions
+
+void display_help(void)
+{
+    Serial.write("\r\nESP32_FloppyTester commands:\r\n");
+    Serial.write("    HELP         - display this help message.\r\n");
+    Serial.write("    TEST INPUT   - activate input test mode, and print level changes on input lines.\r\n");
+    Serial.write("    TEST OUTPUT  - activate output test mode, and drive output pins with binary pin numbers.\r\n");
+    Serial.write("    DETECT       - toggle select lines to determine drive wiring/jumper setup.\r\n");
+    Serial.write("    MOTOR ON/OFF - activate or de-activate motor 1\r\n");
+    Serial.write("    TEST RPM     - spin up motor and calculate spindle speed from index pulses.\r\n");
+    Serial.write("    TEST SEEK    - test head seeking and track 0 detection.\r\n");
+    Serial.write("    TEST READ    - read current track and print decoded data summary (requires formatted disk).\r\n");
+    Serial.write("    TEST ERASE   - erase current track and validate erasure (destroys data on disk).\r\n");
+    Serial.write("    SEEK <X>     - seek head to track X.\r\n");
+    Serial.write("\r\n");
+}
+
+void test_input(void)
+{
+    // repeatedly poll the input lines and print messages for any changes
+    char chLineState[l_iNumInputs];
+    memset(chLineState, -1, l_iNumInputs);
+    while (Serial.available() == 0)
+    {
+        for (int i = 0; i < l_iNumInputs; i++)
         {
-            gpio_set_level(FDC_DIR, 0);
-            iTracksToMove = l_iCurrentTrack - iTargetTrack;
+            const int iESP32PinIdx = l_aiPinsInput[i];
+            const int iNewState = gpio_get_level((gpio_num_t) iESP32PinIdx);
+            const int iFDDPinIdx = l_iPinFDDbySignal[iESP32PinIdx];
+            if (chLineState[i] != iNewState)
+            {
+                Serial.printf("FDD pin %i changed state to %s\r\n", iFDDPinIdx, iNewState ? "HIGH" : "LOW");
+                chLineState[i] = iNewState;
+            }
         }
+        vTaskDelay(1);
+    }
+}
+
+void test_output(void)
+{
+    // toggle the output lines with a 100khz pattern with 8 bits, outputting the
+    // bit pattern of the pin number on each pin, until a new character is received
+    // via the serial port
+    while (Serial.available() == 0)
+    {
+        uint64_t clockTime = 0;
+        timer_get_counter_value(TIMER_GROUP_0, TIMER_0, &clockTime);
+        const int bitIdx = (clockTime / 100) & 7;
+        const int bitTime = (clockTime % 100);
+        for (int i = 0; i < l_iNumOutputs; i++)
+        {
+            const int iESP32PinIdx = l_aiPinsOutput[i];
+            const int iFDDPinIdx = l_iPinFDDbySignal[iESP32PinIdx];
+            const int iBitValue = (((iFDDPinIdx << bitIdx) & 128) && (bitTime < 90)) ? 1 : 0;
+            gpio_set_level((gpio_num_t) iESP32PinIdx, iBitValue);
+        }
+    }
+    // set all output lines low
+    for (int i = 0; i < l_iNumOutputs; i++)
+    {
+        gpio_set_level((gpio_num_t) l_aiPinsOutput[i], 0);
+    }
+    // here is a much faster way to set and clear GPIO pins
+    //portDISABLE_INTERRUPTS();
+    //REG_WRITE(GPIO_OUT_W1TS_REG, (1 << FDC_SEL10));
+    //REG_WRITE(GPIO_OUT_W1TC_REG, (1 << FDC_SEL10));
+    //REG_WRITE(GPIO_OUT1_W1TS_REG, (1 << (FDC_SEL06-32)));
+    //REG_WRITE(GPIO_OUT1_W1TC_REG, (1 << (FDC_SEL06-32)));
+}
+
+void detect(void)
+{
+    int iDriveSelect = -1;
+    int iDriveMotor = -1;
+    const gpio_num_t aiSelectPins[5] = { FDC_SEL06, FDC_SEL10, FDC_SEL12, FDC_SEL14, FDC_SEL16 };
+    bool bFinished = true;
+    for (int i = 0; i < 5; i++)
+    {
+        const gpio_num_t iThisPin = aiSelectPins[i];
+        gpio_set_level(iThisPin, 1);
+        Serial.printf("Select pin %i/5 activated. Press key for drive state: (M)otor on, (L)ight on, (N)othing on, (A)bort?", i+1);
+        char chKey = 0;
+        do
+        {
+            if (Serial.available() == 0)
+            {
+                vTaskDelay(50);      // wait for 50 milliseconds
+                continue;
+            }
+            chKey = Serial.read() & ~32;
+        } while (chKey != 'M' && chKey != 'L' && chKey != 'N' && chKey != 'A');
+        Serial.printf("%c\r\n", chKey);
+        gpio_set_level(iThisPin, 0);
+        if (chKey == 'M')
+            iDriveMotor = iThisPin;
+        if (chKey == 'L')
+            iDriveSelect = iThisPin;
+        if (chKey =='A')
+            break;
+        bFinished = (i == 4);
+    }
+    if (bFinished)
+    {
+        if (iDriveSelect == -1)
+            Serial.write("Error: no drive select line found.\r\n");
+        else if (iDriveMotor == -1)
+            Serial.write("Error: no motor on line found.\r\n");
         else
         {
-            gpio_set_level(FDC_DIR, 1);
-            iTracksToMove = iTargetTrack - l_iCurrentTrack;
+            Serial.write("Detection successful.\r\n");
+            l_iDriveSelect = iDriveSelect;
+            l_iDriveMotor = iDriveMotor;
         }
-        
-        // wait 0.5 seconds for speed to settle
-        delay(TIME_MOTOR_SETTLE);
+    }
+}
 
-        // move to the target track
-        int iMoved = 0;
-        for (; iMoved < iTracksToMove; iMoved++)
+void test_rpm(void)
+{
+    // turn on the motor
+    gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
+    gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
+    
+    // wait 0.5 seconds for speed to settle
+    delay(TIME_MOTOR_SETTLE);
+
+    // reset the sample buffer and enable the index pulse edge capture
+    l_bRecording = false;
+    l_uiLastSignalTime = 0;
+    l_uiDeltaPos = 0;
+    l_uiDeltaCnt = 0;
+    mcpwm_capture_enable(MCPWM_UNIT_0, MCPWM_SELECT_CAP0, MCPWM_POS_EDGE, 0);
+    MCPWM0.int_ena.val = CAP0_INT_EN;
+    mcpwm_isr_register(MCPWM_UNIT_0, onSignalEdge, NULL, ESP_INTR_FLAG_IRAM, NULL);
+
+    // print out the calculated speed once per second, until interrupted by user
+    bool bStarted = false;
+    uint32_t uiSegmentDuration = 0;
+    uint32_t uiSegmentPulses = 0;
+    uint32_t uiDeltaReadPos = 0;
+    uint32_t uiIterations = 0;
+    while(Serial.available() == 0)
+    {
+        // delay to avoid burning the CPU
+        delay(100);
+        uiIterations++;
+        // check for end of buffer condition
+        if (l_uiDeltaPos + 4 >= cuiDeltaBufSize)
+        {
+            break;
+        }
+        // check for no index pulse
+        if (!l_bRecording && uiIterations >= 20)
+        {
+            Serial.write("Error: no index pulse found in 2 seconds.\r\n");
+            break;
+        }
+        // check for one-second window passed
+        while(uiDeltaReadPos < l_uiDeltaPos)
+        {
+            // get the next time delta from the buffer
+            uint32_t uiDelta = DELTA_ITEM(uiDeltaReadPos);
+            if (uiDelta & 0x8000)
+            {
+                uiDeltaReadPos++;
+                uiDelta = ((uiDelta & 0x7fff) << 16) + DELTA_ITEM(uiDeltaReadPos);
+            }
+            uiDeltaReadPos++;
+            // add it to our segment duration
+            uiSegmentDuration += uiDelta;
+            uiSegmentPulses++;
+            // print calculated RPM speed if the segment is over one second
+            if (uiSegmentDuration >= 80 * 1000 * 1000)
+            {
+                double dRevTimeTicks = (double) uiSegmentDuration / uiSegmentPulses;
+                double dRevTimeSecs = dRevTimeTicks / 80000000.0;
+                double dRPM = (1.0 / dRevTimeSecs) * 60.0;
+                Serial.printf("Drive speed: %.4lf rpm\r\n", dRPM);
+                // advance the window to the next second
+                uiSegmentDuration = 0;
+                uiSegmentPulses = 0;
+            }
+        }
+    }
+
+    // disable interrupt
+    mcpwm_capture_disable(MCPWM_UNIT_0, MCPWM_SELECT_CAP0);
+
+    // turn off the motor
+    gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
+    gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+
+    // discard all remaining serial data
+    delay(100);
+    while (Serial.available() > 0)
+    {
+        Serial.read();
+    }
+}
+
+void test_seek(void)
+{
+    // turn on the motor
+    gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
+    gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
+    // set direction to seek out (towards track 0)
+    gpio_set_level(FDC_DIR, 0);
+    
+    // wait 0.5 seconds for speed to settle
+    delay(TIME_MOTOR_SETTLE);
+
+    // search for track zero
+    l_iCurrentTrack = -1;
+    int iMoved = 0;
+    portDISABLE_INTERRUPTS();
+    for (; iMoved < 86; iMoved++)
+    {
+        if (gpio_get_level(FDC_TRK00))
+            break;
+        gpio_set_level(FDC_STEP, 1);
+        delay_micros(1);
+        gpio_set_level(FDC_STEP, 0);
+        delay_micros(4999);
+    }
+    portENABLE_INTERRUPTS();
+    if (iMoved == 86)
+    {
+        Serial.write("Error: head stepped 86 tracks but TRACK0 signal never became active.\r\n");
+        gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
+        gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+        return;
+    }
+    Serial.printf("Found track 0 after stepping %.1f tracks.\r\n", (float) iMoved);
+
+    // try seeking back and forth a few times
+    vTaskDelay(200);
+    for (int iDistance = 0; iDistance < 5; iDistance++)
+    {
+        const int iTracks = 5 * (1 << iDistance) - 1;
+        Serial.printf("Seeking to track %i and back.\r\n", iTracks);
+        gpio_set_level(FDC_DIR, 1);
+        vTaskDelay(1);
+        portDISABLE_INTERRUPTS();
+        for (iMoved = 0; iMoved < iTracks; iMoved++)
         {
             gpio_set_level(FDC_STEP, 1);
             delay_micros(1);
             gpio_set_level(FDC_STEP, 0);
             delay_micros(4999);
+            if (gpio_get_level(FDC_TRK00))
+                break;
         }
-
-        // special case if destination is zero
-        if (iTargetTrack == 0 && !gpio_get_level(FDC_TRK00))
+        portENABLE_INTERRUPTS();
+        if (iMoved != iTracks)
         {
-            Serial.write("Error: moved to track 0 but TRACK0 signal is not active.\r\n");
-            l_iCurrentTrack = -1;
+            Serial.write("Error: head stepped %.1f tracks in, but TRACK0 signal was still active.\r\n", (float) iMoved);
+            gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
+            gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+            return;
         }
-        else
+        gpio_set_level(FDC_DIR, 0);
+        vTaskDelay(200);
+        portDISABLE_INTERRUPTS();
+        for (iMoved = 0; iMoved < iTracks; )
         {
-            l_iCurrentTrack = iTargetTrack;
+            gpio_set_level(FDC_STEP, 1);
+            delay_micros(1);
+            gpio_set_level(FDC_STEP, 0);
+            delay_micros(4999);
+            iMoved++;
+            if (gpio_get_level(FDC_TRK00))
+                break;
         }
-
-        // turn off the motor
-        gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-        gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+        portENABLE_INTERRUPTS();
+        if (iMoved < iTracks)
+        {
+            Serial.printf("Error: TRACK0 signal was asserted after stepping out %.1f of %i tracks.\r\n", (float) iMoved, iTracks);
+            gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
+            gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+            return;
+        }
+        if (!gpio_get_level(FDC_TRK00))
+        {
+            Serial.printf("Error: TRACK0 signal was not asserted after stepping inward and back out %i tracks.\r\n", iTracks);
+            gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
+            gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+            return;
+        }
+        vTaskDelay(200);
     }
-    else if (strInput == "test read")
+
+    // all good
+    Serial.write("All tests successful.\r\n");
+    l_iCurrentTrack = 0;
+    
+    // turn off the motor
+    gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
+    gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+}
+
+void seek_track(int iTargetTrack)
+{
+    // turn on the motor
+    gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
+    gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
+    
+    // set direction to seek
+    int iTracksToMove = 0;
+    if (iTargetTrack < l_iCurrentTrack)
     {
-        // turn on the motor
-        gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
-        gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
-        
-        // wait 0.5 seconds for speed to settle
-        delay(TIME_MOTOR_SETTLE);
-
-        ESP_INTR_DISABLE(XT_TIMER_INTNUM);
-
-        // wait until index pulse arrives
-        do {} while (gpio_get_level(FDC_INDEX) == 0);
-
-        // reset the sample buffer and enable the RDATA pulse edge capture
-        l_bRecording = false;
-        l_uiLastSignalTime = 0;
-        l_uiDeltaPos = 0;
-        l_uiDeltaCnt = 0;
-        mcpwm_capture_enable(MCPWM_UNIT_0, MCPWM_SELECT_CAP1, MCPWM_POS_EDGE, 0);
-        MCPWM0.int_ena.val = CAP1_INT_EN;
-        mcpwm_isr_register(MCPWM_UNIT_0, onSignalEdge, NULL, ESP_INTR_FLAG_IRAM, NULL);
-
-        // wait until the index pulse leaves
-        do {} while (gpio_get_level(FDC_INDEX) == 1);
-
-        // wait until the next index pulse arrives
-        do {} while (gpio_get_level(FDC_INDEX) == 0);
-
-        // disable the signal capture
-        mcpwm_capture_disable(MCPWM_UNIT_0, MCPWM_SELECT_CAP1);
-
-        ESP_INTR_ENABLE(XT_TIMER_INTNUM);
-
-        // print some statistics
-        if (!l_bRecording)
-            Serial.printf("Track read complete; recorded no flux transitions.\r\n");
-        else
-            Serial.printf("Track read complete; recorded %i flux transitions.\r\n", l_uiDeltaCnt + 1);
-
-        // turn off the motor
-        gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
-        gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
-
-        // calculate histogram
-        std::map<uint32_t, uint32_t> mapCountByWavelen;
-        std::map<uint32_t, float>    mapSumByWavelen;
-        for (uint32_t ui = 0; ui < l_uiDeltaPos; ui++)
-        {
-            uint32_t uiDelta = DELTA_ITEM(ui);
-            if (uiDelta & 0x8000)
-            {
-                ui++;
-                uiDelta = ((uiDelta & 0x7fff) << 16) + DELTA_ITEM(ui);
-            }
-            const float fWavelen = uiDelta / 80.0f;
-            const uint32_t uiWavelen = floorf(fWavelen + 0.5f);
-            if (mapCountByWavelen.count(uiWavelen) == 0)
-            {
-                mapCountByWavelen.insert(std::make_pair(uiWavelen, 1));
-                mapSumByWavelen.insert(std::make_pair(uiWavelen, fWavelen));
-            }
-            else
-            {
-                mapCountByWavelen[uiWavelen]++;
-                mapSumByWavelen[uiWavelen] += fWavelen;
-            }
-        }
-        
-        // calculate average of each bin
-        std::map<uint32_t, float>    mapAvgByWavelen;
-        std::map<uint32_t, float>    mapVarByWavelen;
-        for (std::map<uint32_t,uint32_t>::iterator it = mapCountByWavelen.begin(); it != mapCountByWavelen.end(); ++it)
-        {
-            const uint32_t uiWavelen = it->first;
-            mapAvgByWavelen.insert(std::make_pair(uiWavelen, mapSumByWavelen[uiWavelen] / it->second));
-            mapVarByWavelen.insert(std::make_pair(uiWavelen, 0.0f));
-        }
-
-        // calculate variance of each bin
-        for (uint32_t ui = 0; ui < l_uiDeltaPos; ui++)
-        {
-            uint32_t uiDelta = DELTA_ITEM(ui);
-            if (uiDelta & 0x8000)
-            {
-                ui++;
-                uiDelta = ((uiDelta & 0x7fff) << 16) + DELTA_ITEM(ui);
-            }
-            const float fWavelen = uiDelta / 80.0f;
-            const uint32_t uiWavelen = floorf(fWavelen + 0.5f);
-            const float fDiff = fWavelen - mapAvgByWavelen[uiWavelen];
-            mapVarByWavelen[uiWavelen] += fDiff * fDiff;
-        }
-        for (std::map<uint32_t,uint32_t>::iterator it = mapCountByWavelen.begin(); it != mapCountByWavelen.end(); ++it)
-        {
-            const uint32_t uiWavelen = it->first;
-            mapVarByWavelen[uiWavelen] /= it->second;
-        }
-
-        // print statistics
-        Serial.write("Pulse Distance  Count   Average   Variance\r\n");
-        for (std::map<uint32_t,uint32_t>::iterator it = mapCountByWavelen.begin(); it != mapCountByWavelen.end(); ++it)
-        {
-            const uint32_t uiWavelen = it->first;
-            const uint32_t uiCount = it->second;
-            const float fAverage = mapAvgByWavelen[uiWavelen];
-            const float fVariance = mapVarByWavelen[uiWavelen];
-            Serial.printf("     %06u us  %5u   %.3f us  %.5f us\r\n", uiWavelen, uiCount, fAverage, fVariance);
-        }
-
-        // detect track encoding
-        uint32_t auiCountByWavelen[10];
-        for (uint32_t ui = 0; ui < 10; ui++)
-        {
-            if (mapCountByWavelen.count(ui) == 0)
-                auiCountByWavelen[ui] = 0;
-            else
-                auiCountByWavelen[ui] = mapCountByWavelen[ui];
-        }
-        if (l_uiDeltaCnt > 10)
-        {
-            if ((float) (auiCountByWavelen[2] + auiCountByWavelen[3] + auiCountByWavelen[4]) / l_uiDeltaCnt > 0.9f)
-            {
-                Serial.write("High Density MFM track detected.\r\n");
-            }
-            if ((float) (auiCountByWavelen[4] + auiCountByWavelen[6] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
-            {
-                Serial.write("Double Density MFM track detected.\r\n");
-                DecoderMFM decoder((const uint16_t **) l_pusDeltaBuffers, l_uiDeltaPos);
-                decoder.DecodeTrack(true);
-            }
-            else if ((float) (auiCountByWavelen[3] + auiCountByWavelen[5] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
-            {
-                Serial.write("Double Density GCR track detected.\r\n");
-            }
-        }
-        
+        gpio_set_level(FDC_DIR, 0);
+        iTracksToMove = l_iCurrentTrack - iTargetTrack;
     }
     else
     {
-        Serial.write("Unknown command.\r\n");
+        gpio_set_level(FDC_DIR, 1);
+        iTracksToMove = iTargetTrack - l_iCurrentTrack;
+    }
+    
+    // wait 0.5 seconds for speed to settle
+    delay(TIME_MOTOR_SETTLE);
+
+    // move to the target track
+    int iMoved = 0;
+    for (; iMoved < iTracksToMove; iMoved++)
+    {
+        gpio_set_level(FDC_STEP, 1);
+        delay_micros(1);
+        gpio_set_level(FDC_STEP, 0);
+        delay_micros(4999);
+    }
+
+    // special case if destination is zero
+    if (iTargetTrack == 0 && !gpio_get_level(FDC_TRK00))
+    {
+        Serial.write("Error: moved to track 0 but TRACK0 signal is not active.\r\n");
+        l_iCurrentTrack = -1;
+    }
+    else
+    {
+        l_iCurrentTrack = iTargetTrack;
+    }
+
+    // turn off the motor
+    gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
+    gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+}
+
+void test_read(void)
+{
+    // turn on the motor
+    gpio_set_level((gpio_num_t) l_iDriveSelect, 1);
+    gpio_set_level((gpio_num_t) l_iDriveMotor, 1);
+    
+    // wait 0.5 seconds for speed to settle
+    delay(TIME_MOTOR_SETTLE);
+
+    ESP_INTR_DISABLE(XT_TIMER_INTNUM);
+
+    // wait until index pulse arrives
+    do {} while (gpio_get_level(FDC_INDEX) == 0);
+
+    // reset the sample buffer and enable the RDATA pulse edge capture
+    l_bRecording = false;
+    l_uiLastSignalTime = 0;
+    l_uiDeltaPos = 0;
+    l_uiDeltaCnt = 0;
+    mcpwm_capture_enable(MCPWM_UNIT_0, MCPWM_SELECT_CAP1, MCPWM_POS_EDGE, 0);
+    MCPWM0.int_ena.val = CAP1_INT_EN;
+    mcpwm_isr_register(MCPWM_UNIT_0, onSignalEdge, NULL, ESP_INTR_FLAG_IRAM, NULL);
+
+    // wait until the index pulse leaves
+    do {} while (gpio_get_level(FDC_INDEX) == 1);
+
+    // wait until the next index pulse arrives
+    do {} while (gpio_get_level(FDC_INDEX) == 0);
+
+    // disable the signal capture
+    mcpwm_capture_disable(MCPWM_UNIT_0, MCPWM_SELECT_CAP1);
+
+    ESP_INTR_ENABLE(XT_TIMER_INTNUM);
+
+    // print some statistics
+    if (!l_bRecording)
+        Serial.printf("Track read complete; recorded no flux transitions.\r\n");
+    else
+        Serial.printf("Track read complete; recorded %i flux transitions.\r\n", l_uiDeltaCnt + 1);
+
+    // turn off the motor
+    gpio_set_level((gpio_num_t) l_iDriveSelect, 0);
+    gpio_set_level((gpio_num_t) l_iDriveMotor, 0);
+
+    // calculate histogram
+    std::map<uint32_t, uint32_t> mapCountByWavelen;
+    std::map<uint32_t, float>    mapSumByWavelen;
+    for (uint32_t ui = 0; ui < l_uiDeltaPos; ui++)
+    {
+        uint32_t uiDelta = DELTA_ITEM(ui);
+        if (uiDelta & 0x8000)
+        {
+            ui++;
+            uiDelta = ((uiDelta & 0x7fff) << 16) + DELTA_ITEM(ui);
+        }
+        const float fWavelen = uiDelta / 80.0f;
+        const uint32_t uiWavelen = floorf(fWavelen + 0.5f);
+        if (mapCountByWavelen.count(uiWavelen) == 0)
+        {
+            mapCountByWavelen.insert(std::make_pair(uiWavelen, 1));
+            mapSumByWavelen.insert(std::make_pair(uiWavelen, fWavelen));
+        }
+        else
+        {
+            mapCountByWavelen[uiWavelen]++;
+            mapSumByWavelen[uiWavelen] += fWavelen;
+        }
+    }
+    
+    // calculate average of each bin
+    std::map<uint32_t, float>    mapAvgByWavelen;
+    std::map<uint32_t, float>    mapVarByWavelen;
+    for (std::map<uint32_t,uint32_t>::iterator it = mapCountByWavelen.begin(); it != mapCountByWavelen.end(); ++it)
+    {
+        const uint32_t uiWavelen = it->first;
+        mapAvgByWavelen.insert(std::make_pair(uiWavelen, mapSumByWavelen[uiWavelen] / it->second));
+        mapVarByWavelen.insert(std::make_pair(uiWavelen, 0.0f));
+    }
+
+    // calculate variance of each bin
+    for (uint32_t ui = 0; ui < l_uiDeltaPos; ui++)
+    {
+        uint32_t uiDelta = DELTA_ITEM(ui);
+        if (uiDelta & 0x8000)
+        {
+            ui++;
+            uiDelta = ((uiDelta & 0x7fff) << 16) + DELTA_ITEM(ui);
+        }
+        const float fWavelen = uiDelta / 80.0f;
+        const uint32_t uiWavelen = floorf(fWavelen + 0.5f);
+        const float fDiff = fWavelen - mapAvgByWavelen[uiWavelen];
+        mapVarByWavelen[uiWavelen] += fDiff * fDiff;
+    }
+    for (std::map<uint32_t,uint32_t>::iterator it = mapCountByWavelen.begin(); it != mapCountByWavelen.end(); ++it)
+    {
+        const uint32_t uiWavelen = it->first;
+        mapVarByWavelen[uiWavelen] /= it->second;
+    }
+
+    // print statistics
+    Serial.write("Pulse Distance  Count   Average   Variance\r\n");
+    for (std::map<uint32_t,uint32_t>::iterator it = mapCountByWavelen.begin(); it != mapCountByWavelen.end(); ++it)
+    {
+        const uint32_t uiWavelen = it->first;
+        const uint32_t uiCount = it->second;
+        const float fAverage = mapAvgByWavelen[uiWavelen];
+        const float fVariance = mapVarByWavelen[uiWavelen];
+        Serial.printf("     %06u us  %5u   %.3f us  %.5f us\r\n", uiWavelen, uiCount, fAverage, fVariance);
+    }
+
+    // detect track encoding
+    uint32_t auiCountByWavelen[10];
+    for (uint32_t ui = 0; ui < 10; ui++)
+    {
+        if (mapCountByWavelen.count(ui) == 0)
+            auiCountByWavelen[ui] = 0;
+        else
+            auiCountByWavelen[ui] = mapCountByWavelen[ui];
+    }
+    if (l_uiDeltaCnt > 10)
+    {
+        if ((float) (auiCountByWavelen[2] + auiCountByWavelen[3] + auiCountByWavelen[4]) / l_uiDeltaCnt > 0.9f)
+        {
+            Serial.write("High Density MFM track detected.\r\n");
+        }
+        if ((float) (auiCountByWavelen[4] + auiCountByWavelen[6] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
+        {
+            Serial.write("Double Density MFM track detected.\r\n");
+            DecoderMFM decoder((const uint16_t **) l_pusDeltaBuffers, l_uiDeltaPos);
+            decoder.DecodeTrack(true);
+        }
+        else if ((float) (auiCountByWavelen[3] + auiCountByWavelen[5] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
+        {
+            Serial.write("Double Density GCR track detected.\r\n");
+        }
     }
 }
 
@@ -757,42 +836,6 @@ void delay_micros(uint32_t uiMicros)
                  "  blt %1, %0, Loop0             \n"
                  : "=&a"(uiEnd), "=a"(uiCur)
                  : "a"(uiCycles) );
-}
-
-void gpio_reset(void)
-{
-    for (int i = 0; i < l_iNumInputs; i++)
-    {
-        gpio_reset_pin(l_aiPinsInput[i]);
-    }
-    for (int i = 0; i < l_iNumOutputs; i++)
-    {
-        gpio_reset_pin(l_aiPinsOutput[i]);
-    }
-    
-    l_bGPIOInit = false;
-}
-
-void gpio_init(void)
-{
-    // Set pin I/O modes
-    for (int i = 0; i < l_iNumInputs; i++)
-    {
-        gpio_set_pull_mode(l_aiPinsInput[i], GPIO_FLOATING);
-        gpio_set_direction(l_aiPinsInput[i], GPIO_MODE_INPUT);
-    }
-    for (int i = 0; i < l_iNumOutputs; i++)
-    {
-        gpio_set_pull_mode(l_aiPinsOutput[i], GPIO_FLOATING);
-        gpio_set_level(l_aiPinsOutput[i], 0);
-        gpio_set_direction(l_aiPinsOutput[i], GPIO_MODE_OUTPUT);
-    }
-
-    // we will use the MCPWM capture system to record timestamps of signal edges for the INDEX and RDATA lines
-    mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM_CAP_0, FDC_INDEX);
-    mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM_CAP_1, FDC_RDATA);
-
-    l_bGPIOInit = true;
 }
 
 std::string command_input(void)
