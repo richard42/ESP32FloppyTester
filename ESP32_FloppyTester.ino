@@ -75,10 +75,12 @@ void test_input(void);
 void test_output(void);
 void detect_pins(void);
 void detect_rpm(void);
+void detect_status(void);
 bool seek_home(bool bLeaveMotorRunning = false);
 void seek_test(void);
 void seek_track(int iTargetTrack);
-void test_read(void);
+void track_read(void);
+void track_erase(void);
 
 // generic helpers
 void delay_micros(uint32_t uiMicros);
@@ -258,6 +260,10 @@ void loop()
     {
         detect_rpm();
     }
+    else if (strInput == "detect status")
+    {
+        detect_status();
+    }
     else if (strInput.find("seek ") == 0)
     {
         if (strcmp(strInput.c_str() + 5, "home") == 0)
@@ -283,7 +289,7 @@ void loop()
             }
             if (l_iDriveTrack == -1)
             {
-                Serial.write("Error: track position not known. You must use \"TEST SEEK\" first.\r\n");
+                Serial.write("Error: track position not known. You must use \"SEEK HOME\" first.\r\n");
                 return;
             }
             if (l_iDriveTrack == iTargetTrack)
@@ -316,6 +322,10 @@ void loop()
     {
         track_read();
     }
+    else if (strInput == "track erase")
+    {
+        track_erase();
+    }
     else
     {
         Serial.write("Unknown command.\r\n");
@@ -328,18 +338,19 @@ void loop()
 void display_help(void)
 {
     Serial.write("\r\nESP32_FloppyTester commands:\r\n");
-    Serial.write("    HELP         - display this help message.\r\n");
-    Serial.write("    TEST INPUT   - activate input test mode, and print level changes on input lines.\r\n");
-    Serial.write("    TEST OUTPUT  - activate output test mode, and drive output pins with binary pin numbers.\r\n");
-    Serial.write("    DETECT PINS  - toggle select lines to determine drive wiring/jumper setup.\r\n");
-    Serial.write("    DETECT RPM   - spin up motor and calculate spindle speed from index pulses.\r\n");
-    Serial.write("    MOTOR ON/OFF - activate or de-activate motor 1\r\n");
-    Serial.write("    SEEK HOME    - move to track 0.\r\n");
-    Serial.write("    SEEK TEST    - test head seeking and track 0 detection.\r\n");
-    Serial.write("    SEEK <X>     - seek head to track X.\r\n");
-    Serial.write("    SIDE <X>     - use side X (0 or 1) for single-sided commands.\r\n");
-    Serial.write("    TRACK READ   - read current track and print decoded data summary (requires formatted disk).\r\n");
-    Serial.write("    TRACK ERASE  - erase current track and validate erasure (destroys data on disk).\r\n");
+    Serial.write("    HELP           - display this help message.\r\n");
+    Serial.write("    TEST INPUT     - activate input test mode, and print level changes on input lines.\r\n");
+    Serial.write("    TEST OUTPUT    - activate output test mode, and drive output pins with binary pin numbers.\r\n");
+    Serial.write("    DETECT PINS    - toggle select lines to determine drive wiring/jumper setup.\r\n");
+    Serial.write("    DETECT RPM     - spin up motor and calculate spindle speed from index pulses.\r\n");
+    Serial.write("    DETECT STATUS  - show status of Track0, Write Protect, and Disk Change signal.\r\n");
+    Serial.write("    MOTOR ON/OFF   - activate or de-activate motor 1\r\n");
+    Serial.write("    SEEK HOME      - move to track 0.\r\n");
+    Serial.write("    SEEK TEST      - test head seeking and track 0 detection.\r\n");
+    Serial.write("    SEEK <X>       - seek head to track X.\r\n");
+    Serial.write("    SIDE <X>       - use side X (0 or 1) for single-sided commands.\r\n");
+    Serial.write("    TRACK READ     - read current track and print decoded data summary (requires formatted disk).\r\n");
+    Serial.write("    TRACK ERASE    - erase current track and validate erasure (destroys data on disk).\r\n");
     Serial.write("\r\n");
 }
 
@@ -445,6 +456,12 @@ void detect_pins(void)
 
 void detect_rpm(void)
 {
+    if (l_iPinSelect == -1 || l_iPinMotor == -1)
+    {
+        Serial.write("Error: select/motor pin(s) not set. Use DETECT PINS\r\n");
+        return;
+    }
+
     if (!l_bDriveMotorOn)
     {
         // turn on the motor
@@ -532,8 +549,45 @@ void detect_rpm(void)
     }
 }
 
+void detect_status(void)
+{
+    if (l_iPinSelect == -1)
+    {
+        Serial.write("Error: select pin not set. Use DETECT PINS\r\n");
+        return;
+    }
+    
+    // select the drive, if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 1);
+        delay_micros(1000);
+    }
+
+    // read the pins
+    const uint32_t uiTrack0 = gpio_get_level(FDC_TRK00);
+    const uint32_t uiWPT = gpio_get_level(FDC_WPT);
+    const uint32_t uiDiskchg = gpio_get_level(FDC_DISKCHG);
+
+    // de-select the drive, if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+    }
+    
+    Serial.printf("Track 0 Status: %s\r\n", (uiTrack0 ? "active (at track 0)" : "inactive (NOT at track 0)"));
+    Serial.printf("Write Protect Status: %s\r\n", (uiWPT ? "active (write disabled)" : "inactive (write allowed)"));
+    Serial.printf("Disk Change Status: %s\r\n", (uiDiskchg ? "active (no disk in drive)" : "inactive (disk present)"));
+}
+
 bool seek_home(bool bLeaveMotorRunning)
 {
+    if (l_iPinSelect == -1 || l_iPinMotor == -1)
+    {
+        Serial.write("Error: select/motor pin(s) not set. Use DETECT PINS\r\n");
+        return false;
+    }
+
     // set direction to seek out (towards track 0)
     gpio_set_level(FDC_DIR, 0);
     
@@ -662,6 +716,12 @@ void seek_test(void)
 
 void seek_track(int iTargetTrack)
 {
+    if (l_iPinSelect == -1 || l_iPinMotor == -1)
+    {
+        Serial.write("Error: select/motor pin(s) not set. Use DETECT PINS\r\n");
+        return;
+    }
+
     // set direction to seek
     int iTracksToMove = 0;
     if (iTargetTrack < l_iDriveTrack)
@@ -716,6 +776,12 @@ void seek_track(int iTargetTrack)
 
 void track_read(void)
 {
+    if (l_iPinSelect == -1 || l_iPinMotor == -1)
+    {
+        Serial.write("Error: select/motor pin(s) not set. Use DETECT PINS\r\n");
+        return;
+    }
+
     // turn on the motor if necessary
     if (!l_bDriveMotorOn)
     {
@@ -727,7 +793,8 @@ void track_read(void)
 
     ESP_INTR_DISABLE(XT_TIMER_INTNUM);
 
-    // wait until index pulse arrives
+    // wait until index pulse first arrives
+    do {} while (gpio_get_level(FDC_INDEX) == 1);
     do {} while (gpio_get_level(FDC_INDEX) == 0);
 
     // reset the sample buffer and enable the RDATA pulse edge capture
@@ -857,6 +924,64 @@ void track_read(void)
     }
 }
 
+void track_erase(void)
+{
+    // make sure pins are defined
+    if (l_iPinSelect == -1 || l_iPinMotor == -1)
+    {
+        Serial.write("Error: select/motor pin(s) not set. Use DETECT PINS\r\n");
+        return;
+    }
+
+    // select the drive, if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 1);
+        delay_micros(1000);
+    }
+
+    // check the write protect status
+    if (gpio_get_level(FDC_WPT))
+    {
+        Serial.write("Error: write-protect is enabled on disk.\r\n");
+        if (!l_bDriveMotorOn)
+        {
+            gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        }
+        return;
+    }
+
+    // turn on the motor if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinMotor, 1);
+        // wait 0.5 seconds for speed to settle
+        delay(TIME_MOTOR_SETTLE);
+    }
+
+    // wait until index pulse first arrives
+    do {} while (gpio_get_level(FDC_INDEX) == 1);
+    do {} while (gpio_get_level(FDC_INDEX) == 0);
+
+    // set the Write Gate line to erase the track
+    gpio_set_level(FDC_WGATE, 1);
+
+    // wait until the index pulse leaves
+    do {} while (gpio_get_level(FDC_INDEX) == 1);
+
+    // wait until the next index pulse arrives
+    do {} while (gpio_get_level(FDC_INDEX) == 0);
+
+    // disable the Write Gate
+    gpio_set_level(FDC_WGATE, 0);
+
+    // turn off the motor if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+    }
+}
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Interrupt Service Routine
 
