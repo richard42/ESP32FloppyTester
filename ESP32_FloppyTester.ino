@@ -91,6 +91,7 @@ static bool         l_bGPIOInit = false;
 static int          l_iPinSelect = FDC_SEL10;
 static int          l_iPinMotor = FDC_SEL16;
 static int          l_iDriveTrack = -1;
+static int          l_iDriveSide = 0;
 static bool         l_bDriveMotorOn = false;
 
 const uint32_t            cuiDeltaBufSize = 65536;
@@ -293,6 +294,24 @@ void loop()
             seek_track(iTargetTrack);
         }
     }
+    else if (strInput.find("side ") == 0 && strInput.size() > 5)
+    {
+        if (strInput.at(5) == '0')
+        {
+            l_iDriveSide = 0;
+            gpio_set_level(FDC_SIDE1, 0);
+        }
+        else if (strInput.at(5) == '1')
+        {
+            l_iDriveSide = 1;
+            gpio_set_level(FDC_SIDE1, 1);
+        }
+        else
+        {
+            Serial.printf("Error: invalid SIDE selection '%s'.\r\n", strInput.at(5));
+            return;
+        }
+    }
     else if (strInput == "track read")
     {
         track_read();
@@ -318,6 +337,7 @@ void display_help(void)
     Serial.write("    SEEK HOME    - move to track 0.\r\n");
     Serial.write("    SEEK TEST    - test head seeking and track 0 detection.\r\n");
     Serial.write("    SEEK <X>     - seek head to track X.\r\n");
+    Serial.write("    SIDE <X>     - use side X (0 or 1) for single-sided commands.\r\n");
     Serial.write("    TRACK READ   - read current track and print decoded data summary (requires formatted disk).\r\n");
     Serial.write("    TRACK ERASE  - erase current track and validate erasure (destroys data on disk).\r\n");
     Serial.write("\r\n");
