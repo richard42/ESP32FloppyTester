@@ -82,9 +82,14 @@ void seek_track(int iTargetTrack);
 void track_read(void);
 void track_erase(void);
 
+// command helpers
+void capture_track_data(void);
+float calculate_interval_spread(void);
+
 // generic helpers
 void delay_micros(uint32_t uiMicros);
 std::string command_input(void);
+int compare_uint32(const uint32_t *puiA, const uint32_t *puiB);
 
 //////////////////////////////////////////////////////////////////////////
 // Local variables
@@ -791,43 +796,29 @@ void track_read(void)
         delay(TIME_MOTOR_SETTLE);
     }
 
-    ESP_INTR_DISABLE(XT_TIMER_INTNUM);
-
-    // wait until index pulse first arrives
-    do {} while (gpio_get_level(FDC_INDEX) == 1);
-    do {} while (gpio_get_level(FDC_INDEX) == 0);
-
-    // reset the sample buffer and enable the RDATA pulse edge capture
-    l_bRecording = false;
-    l_uiLastSignalTime = 0;
-    l_uiDeltaPos = 0;
-    l_uiDeltaCnt = 0;
-    mcpwm_capture_enable(MCPWM_UNIT_0, MCPWM_SELECT_CAP1, MCPWM_POS_EDGE, 0);
-    MCPWM0.int_ena.val = CAP1_INT_EN;
-    mcpwm_isr_register(MCPWM_UNIT_0, onSignalEdge, NULL, ESP_INTR_FLAG_IRAM, NULL);
-
-    // wait until the index pulse leaves
-    do {} while (gpio_get_level(FDC_INDEX) == 1);
-
-    // wait until the next index pulse arrives
-    do {} while (gpio_get_level(FDC_INDEX) == 0);
-
-    // disable the signal capture
-    mcpwm_capture_disable(MCPWM_UNIT_0, MCPWM_SELECT_CAP1);
-
-    ESP_INTR_ENABLE(XT_TIMER_INTNUM);
-
-    // print some statistics
-    if (!l_bRecording)
-        Serial.printf("Track read complete; recorded no flux transitions.\r\n");
-    else
-        Serial.printf("Track read complete; recorded %i flux transitions.\r\n", l_uiDeltaCnt + 1);
+    // call core track-reading function
+    capture_track_data();
 
     // turn off the motor if necessary
     if (!l_bDriveMotorOn)
     {
         gpio_set_level((gpio_num_t) l_iPinSelect, 0);
         gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+    }
+
+    // print some statistics
+    if (!l_bRecording)
+    {
+        Serial.printf("Track read complete; recorded no flux transitions.\r\n");
+        return;
+    }
+    Serial.printf("Track read complete; recorded %i flux transitions.\r\n", l_uiDeltaCnt + 1);
+
+    // print 90% pulse interval spread
+    if (l_uiDeltaCnt > 100)
+    {
+        float fSpreadUS = calculate_interval_spread();
+        Serial.printf("90%% pulse interval spread is %.1f microseconds.\r\n", fSpreadUS);
     }
 
     // calculate histogram
@@ -975,13 +966,101 @@ void track_erase(void)
     // disable the Write Gate
     gpio_set_level(FDC_WGATE, 0);
 
+    // call helper function to record data from one track
+    capture_track_data();
+
     // turn off the motor if necessary
     if (!l_bDriveMotorOn)
     {
         gpio_set_level((gpio_num_t) l_iPinSelect, 0);
         gpio_set_level((gpio_num_t) l_iPinMotor, 0);
     }
+
+    // sanity checks
+    if (!l_bRecording)
+    {
+        Serial.printf("Track read failed; recorded no flux transitions.\r\n");
+        return;
+    }
+    if (l_uiDeltaCnt < 1000)
+    {
+        Serial.printf("Only %i flux transitions recorded. AGC circuit failure?\r\n", l_uiDeltaCnt + 1);
+        return;
+    }
+
+    float fSpreadUS = calculate_interval_spread();
+    
+    // print results of erase operation
+    Serial.printf("Track read after erase: 90%% pulse interval spread is %.1f microseconds. Track %s.\r\n",
+                  fSpreadUS, (fSpreadUS < 5.0f ? "is NOT erased. Some patterns are still present" : "appears to be random, suggesting erase was successful"));
 }
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Command Helper Functions
+
+void capture_track_data(void)
+{
+    ESP_INTR_DISABLE(XT_TIMER_INTNUM);
+
+    // wait until index pulse first arrives
+    do {} while (gpio_get_level(FDC_INDEX) == 1);
+    do {} while (gpio_get_level(FDC_INDEX) == 0);
+
+    // reset the sample buffer and enable the RDATA pulse edge capture
+    l_bRecording = false;
+    l_uiLastSignalTime = 0;
+    l_uiDeltaPos = 0;
+    l_uiDeltaCnt = 0;
+    mcpwm_capture_enable(MCPWM_UNIT_0, MCPWM_SELECT_CAP1, MCPWM_POS_EDGE, 0);
+    MCPWM0.int_ena.val = CAP1_INT_EN;
+    mcpwm_isr_register(MCPWM_UNIT_0, onSignalEdge, NULL, ESP_INTR_FLAG_IRAM, NULL);
+
+    // wait until the index pulse leaves
+    do {} while (gpio_get_level(FDC_INDEX) == 1);
+
+    // wait until the next index pulse arrives
+    do {} while (gpio_get_level(FDC_INDEX) == 0);
+
+    // disable the signal capture
+    mcpwm_capture_disable(MCPWM_UNIT_0, MCPWM_SELECT_CAP1);
+
+    ESP_INTR_ENABLE(XT_TIMER_INTNUM);
+}
+
+float calculate_interval_spread(void)
+{
+    // calculate histogram with 100ns bins
+    uint32_t auiCountByWavelen[256];
+    memset(auiCountByWavelen, 0, sizeof(auiCountByWavelen));
+    for (uint32_t ui = 0; ui < l_uiDeltaPos; ui++)
+    {
+        uint32_t uiDelta = DELTA_ITEM(ui);
+        if (uiDelta & 0x8000)
+        {
+            ui++;
+            continue;
+        }
+        const float fWavelen = uiDelta / 8.0f;
+        const uint32_t uiWavelen = floorf(fWavelen + 0.5f);
+        if (uiWavelen < 256)
+            auiCountByWavelen[uiWavelen]++;
+    }
+
+    // sort histogram
+    qsort(auiCountByWavelen, 256, sizeof(uint32_t), (int (*)(const void *, const void *)) compare_uint32);
+
+    // count how many of the most popular bins are required to cover >= 90% of all of the pulse intervals
+    const uint32_t uiCountThresh = l_uiDeltaCnt * 9 / 10;
+    uint32_t uiCurBin = 0, uiCurCount = 0;
+    while (uiCurCount < uiCountThresh)
+    {
+        uiCurCount += auiCountByWavelen[uiCurBin];
+        uiCurBin++;
+    }
+
+    return uiCurBin / 10.0f;
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Interrupt Service Routine
 
@@ -1091,4 +1170,9 @@ std::string command_input(void)
     }
 
     return strInputLine;
+}
+
+int compare_uint32(const uint32_t *puiA, const uint32_t *puiB)
+{
+    return *puiB - *puiA;
 }
