@@ -101,6 +101,13 @@ static int          l_iDriveTrack = -1;
 static int          l_iDriveSide = 0;
 static bool         l_bDriveMotorOn = false;
 
+typedef enum _geo_format { FMT_INVALID, FMT_IBM, FMT_AMIGA } geo_format_t;
+
+static geo_format_t       l_eGeoFormat = FMT_IBM;
+static int                l_iGeoSides = 2;
+static int                l_iGeoTracks = 80;
+static int                l_iGeoSectors = 9;
+
 const uint32_t            cuiDeltaBufSize = 65536;
 static volatile bool      l_bRecording = false;
 static volatile uint32_t  l_uiLastSignalTime = 0;
@@ -269,6 +276,63 @@ void loop()
     {
         detect_status();
     }
+    else if (strInput == "geometry")
+    {
+        if (l_eGeoFormat == FMT_AMIGA)
+        {
+            Serial.write("Current geometry: AMIGA\r\n");
+        }
+        else if (l_eGeoFormat == FMT_IBM)
+        {
+            Serial.printf("Current geometry: IBM, %i sides, %i tracks, %i sectors.\r\n", l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
+        }
+        else
+        {
+            Serial.write("Current geometry: unknown/invalid.\r\n");
+        }
+    }
+    else if (strInput.find("geometry ") == 0)
+    {
+        if (strInput == "geometry amiga")
+        {
+            l_eGeoFormat = FMT_AMIGA;
+            l_iGeoSides = 2;
+            l_iGeoTracks = 80;
+            l_iGeoSectors = 11;
+        }
+        else if (strInput.find("geometry ibm ") == 0)
+        {
+            char chSides[4] = {0, 0, 0, 0};
+            int iTracks, iSectors;
+            if (sscanf(strInput.c_str() + 13, "%2s %d %d", chSides, &iTracks, &iSectors) != 3)
+            {
+                Serial.printf("Error: invalid IBM geometry '%s' specified.\r\n", strInput.c_str() + 13);
+            }
+            else if (strcmp(chSides, "ss") != 0 && strcmp(chSides, "ds") != 0)
+            {
+                Serial.printf("Error: invalid IBM geometry sides '%s' specified.\r\n", chSides);
+            }
+            else if (iTracks != 40 && iTracks != 80)
+            {
+                Serial.printf("Error: invalid IBM geometry tracks '%i' specified.\r\n", iTracks);
+            }
+            else if (iSectors < 9 || iSectors > 11)
+            {
+                Serial.printf("Error: invalid IBM geometry sectors '%i' specified.\r\n", iSectors);
+            }
+            else
+            {
+                l_eGeoFormat = FMT_IBM;
+                l_iGeoSides = (strcmp(chSides, "ss") == 0) ? 1 : 2;
+                l_iGeoTracks = iTracks;
+                l_iGeoSectors = iSectors;
+            }
+        }
+        else
+        {
+            Serial.printf("Error: invalid geometry '%s' specified.\r\n", strInput.c_str() + 9);
+        }
+    }
     else if (strInput == "seek")
     {
         if (l_iDriveTrack == -1)
@@ -371,6 +435,9 @@ void display_help(void)
     Serial.write("    SEEK           - display current track number.\r\n");
     Serial.write("    SIDE <X>       - use side X (0 or 1) for single-sided commands.\r\n");
     Serial.write("    SIDE           - display current side number.\r\n");
+    Serial.write("    GEOMETRY ...   - set/show current drive geometry. Examples:\r\n");
+    Serial.write("             IBM <SS/DS> <40/80> <9/10/11> - set IBM format, sides, track count, sector count.\r\n");
+    Serial.write("             AMIGA                         - set Amiga format, 2 sides, 80 tracks, 11 sectors.\r\n");
     Serial.write("    TRACK READ     - read current track and print decoded data summary (requires formatted disk).\r\n");
     Serial.write("    TRACK ERASE    - erase current track and validate erasure (destroys data on disk).\r\n");
     Serial.write("\r\n");
