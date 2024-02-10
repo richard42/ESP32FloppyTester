@@ -269,6 +269,17 @@ void loop()
     {
         detect_status();
     }
+    else if (strInput == "seek")
+    {
+        if (l_iDriveTrack == -1)
+        {
+            Serial.write("Current track position not known. You must use \"SEEK HOME\" first.\r\n");
+        }
+        else
+        {
+            Serial.printf("Current track number is %i.\r\n", l_iDriveTrack);
+        }
+    }
     else if (strInput.find("seek ") == 0)
     {
         if (strcmp(strInput.c_str() + 5, "home") == 0)
@@ -304,6 +315,10 @@ void loop()
             }
             seek_track(iTargetTrack);
         }
+    }
+    else if (strInput == "side")
+    {
+        Serial.printf("Current side number is %i.\r\n", l_iDriveSide);
     }
     else if (strInput.find("side ") == 0 && strInput.size() > 5)
     {
@@ -353,7 +368,9 @@ void display_help(void)
     Serial.write("    SEEK HOME      - move to track 0.\r\n");
     Serial.write("    SEEK TEST      - test head seeking and track 0 detection.\r\n");
     Serial.write("    SEEK <X>       - seek head to track X.\r\n");
+    Serial.write("    SEEK           - display current track number.\r\n");
     Serial.write("    SIDE <X>       - use side X (0 or 1) for single-sided commands.\r\n");
+    Serial.write("    SIDE           - display current side number.\r\n");
     Serial.write("    TRACK READ     - read current track and print decoded data summary (requires formatted disk).\r\n");
     Serial.write("    TRACK ERASE    - erase current track and validate erasure (destroys data on disk).\r\n");
     Serial.write("\r\n");
