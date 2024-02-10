@@ -14,6 +14,7 @@
 
 #include <map>
 
+#include "FloppyTester.h"
 #include "DecoderMFM.h"
 
 #define DELTA_ITEM(X) m_pusDeltaBuffers[(X)>>12][(X)&0x0fff]
@@ -39,7 +40,7 @@ DecoderMFM::~DecoderMFM()
 //////////////////////////////////////////////////////////////////////////
 // modifiers
 
-void DecoderMFM::DecodeTrack(bool bDebugPrint)
+void DecoderMFM::DecodeTrack(geo_format_t eFormat, bool bDebugPrint)
 {
     // iterate over all delta samples, looking for markers
     const uint8_t pucSpecialC2[] = { 3,2,3,4,3,  4,2,3,4,3,  4,2,3,4,3, 4,2,2,2,2,2,3,2 };
@@ -68,7 +69,7 @@ void DecoderMFM::DecodeTrack(bool bDebugPrint)
         // handle state
         if (uiNumSpecMatch == 0)
         {
-            if (uiFoundZeros < 12)
+            if (uiFoundZeros < (eFormat == FMT_AMIGA ? 12 : 80))
             {
                 if (uiWavelen == 2)
                     uiFoundZeros++;
@@ -115,14 +116,14 @@ void DecoderMFM::DecodeTrack(bool bDebugPrint)
         uiNumSpecMatch++;
         
         // special case for Amiga
-        if (uiFoundZeros <= 18 && uiFoundZeros >= 12 && pucSpecMatch == pucSpecialA1 && uiNumSpecMatch == 10)
+        if (eFormat == FMT_AMIGA && uiFoundZeros <= 18 && uiFoundZeros >= 12 && pucSpecMatch == pucSpecialA1 && uiNumSpecMatch == 10)
         {
             ui = ReadSectorBytesAmiga(ui + 1) - 1;
             continue;
         }
 
         // normal cases for IBM
-        if (uiNumSpecMatch == uiMaxSpecMatch)
+        if (eFormat == FMT_IBM && uiNumSpecMatch == uiMaxSpecMatch)
         {
             // found a marker
             if (pucSpecMatch == pucSpecialC2)
@@ -135,10 +136,7 @@ void DecoderMFM::DecodeTrack(bool bDebugPrint)
             }
             else // (pucSpecMatch == pucSpecialA1)
             {
-                if (uiFoundZeros >= 80)
-                    ui = ReadSectorBytesIBM(ui + 1) - 1;
-                else
-                    Serial.printf("Error: found special A1 marker but weird # of preceding zeros (%i)\r\n", uiFoundZeros);
+                ui = ReadSectorBytesIBM(ui + 1) - 1;
                 continue;
             }
         }

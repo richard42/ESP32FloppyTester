@@ -9,6 +9,8 @@
 
 #include <stdint.h>
 
+#include "FloppyTester.h"
+
 class DecoderMFM
 {
 public:
@@ -18,7 +20,7 @@ public:
     // accessors
 
     // modifiers
-    void DecodeTrack(bool bDebugPrint);
+    void DecodeTrack(geo_format_t eFormat, bool bDebugPrint);
 
     // private methods
 private:

@@ -22,6 +22,7 @@
 
 #include "esp_intr_alloc.h"
 
+#include "FloppyTester.h"
 #include "DecoderMFM.h"
 
 //////////////////////////////////////////////////////////////////////////
@@ -100,8 +101,6 @@ static int          l_iPinMotor = FDC_SEL16;
 static int          l_iDriveTrack = -1;
 static int          l_iDriveSide = 0;
 static bool         l_bDriveMotorOn = false;
-
-typedef enum _geo_format { FMT_INVALID, FMT_IBM, FMT_AMIGA } geo_format_t;
 
 static geo_format_t       l_eGeoFormat = FMT_IBM;
 static int                l_iGeoSides = 2;
@@ -986,7 +985,7 @@ void track_read(void)
         {
             Serial.write("Double Density MFM track detected.\r\n");
             DecoderMFM decoder((const uint16_t **) l_pusDeltaBuffers, l_uiDeltaPos);
-            decoder.DecodeTrack(true);
+            decoder.DecodeTrack(l_eGeoFormat, true);
         }
         else if ((float) (auiCountByWavelen[3] + auiCountByWavelen[5] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
         {
@@ -1082,10 +1081,13 @@ void capture_track_data(void)
 {
     ESP_INTR_DISABLE(XT_TIMER_INTNUM);
 
-    // wait until index pulse first arrives
-    do {} while (gpio_get_level(FDC_INDEX) == 1);
-    do {} while (gpio_get_level(FDC_INDEX) == 0);
-
+    if (l_eGeoFormat == FMT_IBM)
+    {
+        // wait until index pulse first arrives
+        do {} while (gpio_get_level(FDC_INDEX) == 1);
+        do {} while (gpio_get_level(FDC_INDEX) == 0);
+    }
+    
     // reset the sample buffer and enable the RDATA pulse edge capture
     l_bRecording = false;
     l_uiLastSignalTime = 0;
@@ -1095,11 +1097,19 @@ void capture_track_data(void)
     MCPWM0.int_ena.val = CAP1_INT_EN;
     mcpwm_isr_register(MCPWM_UNIT_0, onSignalEdge, NULL, ESP_INTR_FLAG_IRAM, NULL);
 
-    // wait until the index pulse leaves
-    do {} while (gpio_get_level(FDC_INDEX) == 1);
-
-    // wait until the next index pulse arrives
-    do {} while (gpio_get_level(FDC_INDEX) == 0);
+    if (l_eGeoFormat == FMT_IBM)
+    {
+        // wait until the index pulse leaves
+        do {} while (gpio_get_level(FDC_INDEX) == 1);
+    
+        // wait until the next index pulse arrives
+        do {} while (gpio_get_level(FDC_INDEX) == 0);
+    }
+    else if (l_eGeoFormat == FMT_AMIGA)
+    {
+        // just wait for 220 milliseconds (10% longer than a full track)
+        delay_micros(220000);
+    }
 
     // disable the signal capture
     mcpwm_capture_disable(MCPWM_UNIT_0, MCPWM_SELECT_CAP1);
