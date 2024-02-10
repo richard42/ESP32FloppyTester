@@ -22,7 +22,8 @@ public:
 
     // private methods
 private:
-    uint32_t ReadSectorBytes(uint32_t uiStartIdx);
+    uint32_t ReadSectorBytesIBM(uint32_t uiStartIdx);
+    uint32_t ReadSectorBytesAmiga(uint32_t uiStartIdx);
     void advance_crc16(const uint8_t* data_p, uint32_t length);
 
     // member variables

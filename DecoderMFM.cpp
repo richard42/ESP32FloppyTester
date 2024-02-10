@@ -68,7 +68,7 @@ void DecoderMFM::DecodeTrack(bool bDebugPrint)
         // handle state
         if (uiNumSpecMatch == 0)
         {
-            if (uiFoundZeros < 80)
+            if (uiFoundZeros < 12)
             {
                 if (uiWavelen == 2)
                     uiFoundZeros++;
@@ -113,6 +113,15 @@ void DecoderMFM::DecodeTrack(bool bDebugPrint)
             continue;
         }
         uiNumSpecMatch++;
+        
+        // special case for Amiga
+        if (uiFoundZeros <= 18 && uiFoundZeros >= 12 && pucSpecMatch == pucSpecialA1 && uiNumSpecMatch == 10)
+        {
+            ui = ReadSectorBytesAmiga(ui + 1) - 1;
+            continue;
+        }
+
+        // normal cases for IBM
         if (uiNumSpecMatch == uiMaxSpecMatch)
         {
             // found a marker
@@ -126,7 +135,10 @@ void DecoderMFM::DecodeTrack(bool bDebugPrint)
             }
             else // (pucSpecMatch == pucSpecialA1)
             {
-                ui = ReadSectorBytes(ui + 1) - 1;
+                if (uiFoundZeros >= 80)
+                    ui = ReadSectorBytesIBM(ui + 1) - 1;
+                else
+                    Serial.printf("Error: found special A1 marker but weird # of preceding zeros (%i)\r\n", uiFoundZeros);
                 continue;
             }
         }
@@ -136,7 +148,7 @@ void DecoderMFM::DecodeTrack(bool bDebugPrint)
 //////////////////////////////////////////////////////////////////////////
 // private methods
 
-uint32_t DecoderMFM::ReadSectorBytes(uint32_t uiStartIdx)
+uint32_t DecoderMFM::ReadSectorBytesIBM(uint32_t uiStartIdx)
 {
     uint8_t ucBytes[2048];
     uint32_t uiBytesRead = 0;
@@ -234,7 +246,7 @@ uint32_t DecoderMFM::ReadSectorBytes(uint32_t uiStartIdx)
             if (ucBytes[0] == 0xfe)
             {
                 // Sector ID record
-                Serial.printf("Sector ID: Cylinder %i, Side %i, Sector %i, CRC=%04x (%s)\r\n", ucBytes[1], ucBytes[2], ucBytes[3],
+                Serial.printf("IBM Sector ID: Cylinder %i, Side %i, Sector %i, CRC=%04x (%s)\r\n", ucBytes[1], ucBytes[2], ucBytes[3],
                               (ucBytes[5] << 8) + ucBytes[6], (m_usCurrentCRC == 0 ? "GOOD" : "BAD"));
                 m_uiSectorDataLength = 1 << (7 + ucBytes[4]);
                 return ui + 1;
@@ -242,11 +254,139 @@ uint32_t DecoderMFM::ReadSectorBytes(uint32_t uiStartIdx)
             else if (ucBytes[0] == 0xfb)
             {
                 // Sector data
-                Serial.printf("Sector data: %i bytes with CRC=%04x (%s)\r\n", m_uiSectorDataLength,
+                Serial.printf("IBM Sector data: %i bytes with CRC=%04x (%s)\r\n", m_uiSectorDataLength,
                               (ucBytes[m_uiSectorDataLength+1] << 8) + ucBytes[m_uiSectorDataLength+2], (m_usCurrentCRC == 0 ? "GOOD" : "BAD"));
                 m_uiSectorDataLength = 0;
                 return ui + 1;
             }
+        }
+    }
+}
+
+uint32_t DecoderMFM::ReadSectorBytesAmiga(uint32_t uiStartIdx)
+{
+    uint8_t ucSwizBytes[540];
+    uint8_t ucBytes[540];
+    uint32_t uiBytesRead = 0;
+    
+    uint32_t uiLastBit = 1;
+    uint32_t uiPriorBits = 0;
+    uint32_t uiNumPriorBits = 0;
+    for (uint32_t ui = uiStartIdx; ui < m_uiDeltaMax; ui++)
+    {
+        // get binned time delta value and bail out if long delay is found
+        uint32_t uiDelta = DELTA_ITEM(ui);
+        if (uiDelta & 0x8000)
+        {
+            // error - long delay
+            Serial.printf("[Sector read error: long delay]\r\n");
+            return ui + 2;
+        }
+        const float fWavelen = uiDelta / 80.0f;
+        const uint32_t uiWavelen = floorf(fWavelen / 2.0f + 0.5f);
+        // handle time delta
+        if (uiWavelen == 2)
+        {
+            uiPriorBits = (uiPriorBits << 1) + uiLastBit;
+            uiNumPriorBits++;
+        }
+        else if (uiWavelen == 3)
+        {
+            if (uiLastBit == 0)
+            {
+                uiLastBit = 1;
+                uiPriorBits = (uiPriorBits << 1) + 1;
+                uiNumPriorBits++;
+            }
+            else
+            {
+                uiLastBit = 0;
+                uiPriorBits = (uiPriorBits << 2) + 0;
+                uiNumPriorBits += 2;
+            }
+        }
+        else // (uiWavelen == 4)
+        {
+            if (uiLastBit == 1)
+            {
+                uiPriorBits = (uiPriorBits << 2) + 1;
+                uiNumPriorBits += 2;
+            }
+            else
+            {
+                Serial.printf("[Sector read error: missing clock pulse]\r\n");
+                return ui + 1;
+            }
+        }
+        // handle byte output
+        if (uiNumPriorBits < 8)
+            continue;
+        ucSwizBytes[uiBytesRead] = (uiPriorBits >> (uiNumPriorBits - 8)) & 0xff;
+        uiBytesRead++;
+        uiPriorBits &= ((1 << (uiNumPriorBits - 8)) - 1);
+        uiNumPriorBits -= 8;
+        // handle track completion
+        if (uiBytesRead == 512 + 28)
+        {
+            // de-multipex (un-swizzle) the bytes
+            for (uint32_t ui2 = 0; ui2 < 528; ui2++)
+            {
+                uint32_t uiBlockStart = 0, uiPairOffset = 0;
+                if (ui2 < 4)
+                    { uiBlockStart = 0;  uiPairOffset = 2; }
+                else if (ui2 < 20)
+                    { uiBlockStart = 4;  uiPairOffset = 8; }
+                else if (ui2 < 24)
+                    { uiBlockStart = 20; uiPairOffset = 2; }
+                else if (ui2 < 28)
+                    { uiBlockStart = 24; uiPairOffset = 2; }
+                else
+                    { uiBlockStart = 28; uiPairOffset = 256; }
+                const uint32_t uiOddIdx = (ui2 - uiBlockStart) / 2 + uiBlockStart;
+                const uint32_t uiEvenIdx = uiOddIdx + uiPairOffset;
+                uint8_t ucOddBits = ucSwizBytes[uiOddIdx];
+                uint8_t ucEvenBits = ucSwizBytes[uiEvenIdx];
+                if (ui2 & 1)
+                {
+                    ucOddBits &= 0x0f;
+                    ucEvenBits &= 0x0f;
+                }
+                else
+                {
+                    ucOddBits >>= 4;
+                    ucEvenBits >>= 4;
+                }
+                ucBytes[ui2] = ((ucOddBits & 0x08) << 4) + ((ucEvenBits & 0x08) << 3) + 
+                               ((ucOddBits & 0x04) << 3) + ((ucEvenBits & 0x04) << 2) + 
+                               ((ucOddBits & 0x02) << 2) + ((ucEvenBits & 0x02) << 1) + 
+                               ((ucOddBits & 0x01) << 1) + ((ucEvenBits & 0x01) << 0);
+            }
+            // calculate these worthless checksums
+            uint16_t usHeaderCk = 0;
+            for (uint32_t ui3 = 0; ui3 < 10; ui3++)
+            {
+                uint16_t usWord = (ucSwizBytes[ui3*2] << 8) + ucSwizBytes[ui3*2+1];
+                usHeaderCk ^= usWord;
+            }            
+            uint16_t usDataCk = 0;
+            for (uint32_t ui3 = 14; ui3 < 270; ui3++)
+            {
+                uint16_t usWord = (ucSwizBytes[ui3*2] << 8) + ucSwizBytes[ui3*2+1];
+                usDataCk ^= usWord;
+            }            
+            uint32_t uiCalcHeaderCk = 0, uiCalcDataCk = 0;
+            for (uint32_t ui4 = 0; ui4 < 16; ui4++)
+            {
+                uiCalcHeaderCk |= (usHeaderCk & (1 << ui4)) << ui4;
+                uiCalcDataCk   |= (usDataCk   & (1 << ui4)) << ui4;
+            }
+            // Sector data
+            uint32_t uiHeaderCk = (ucBytes[20] << 24) + (ucBytes[21] << 16) + (ucBytes[22] << 8) + ucBytes[23];
+            uint32_t uiDataCk =   (ucBytes[24] << 24) + (ucBytes[25] << 16) + (ucBytes[26] << 8) + ucBytes[27];
+            Serial.printf("Amiga Sector format: %02x  track: %i  Sector: %i  SectorsToGap: %i  Header cksum: %08x (%s)  Data cksum: %08x (%s)\r\n",
+                          ucBytes[0], ucBytes[1], ucBytes[2], ucBytes[3],
+                          uiHeaderCk, (uiHeaderCk == uiCalcHeaderCk ? "GOOD" : "BAD"), uiDataCk, (uiDataCk == uiCalcDataCk ? "GOOD" : "BAD"));
+            return ui + 1;
         }
     }
 }

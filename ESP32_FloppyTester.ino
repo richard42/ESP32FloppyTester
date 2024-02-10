@@ -898,10 +898,6 @@ void track_read(void)
     }
     if (l_uiDeltaCnt > 10)
     {
-        if ((float) (auiCountByWavelen[2] + auiCountByWavelen[3] + auiCountByWavelen[4]) / l_uiDeltaCnt > 0.9f)
-        {
-            Serial.write("High Density MFM track detected.\r\n");
-        }
         if ((float) (auiCountByWavelen[4] + auiCountByWavelen[6] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
         {
             Serial.write("Double Density MFM track detected.\r\n");
