@@ -34,4 +34,5 @@ private:
     const uint32_t    m_uiDeltaMax;
     uint32_t          m_uiSectorDataLength;
     uint16_t          m_usCurrentCRC;
+    uint32_t          m_uiSectorsRead;
 };
