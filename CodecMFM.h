@@ -20,15 +20,15 @@ public:
     // accessors
 
     // modifiers
-    void DecodeTrack(geo_format_t eFormat, bool bDebugPrint);
+    void DecodeTrack(geo_format_t eFormat, bool bDebugPrint, track_metadata_t& rsMeta);
 
     // static helper
     static void advance_crc16(uint16_t& usCurrentCRC, const uint8_t* data_p, uint32_t length);
     
     // private methods
 private:
-    uint32_t ReadSectorBytesIBM(uint32_t uiStartIdx);
-    uint32_t ReadSectorBytesAmiga(uint32_t uiStartIdx);
+    uint32_t ReadSectorBytesIBM(uint32_t uiStartIdx, bool bDebugPrint, track_metadata_t& rsMeta);
+    uint32_t ReadSectorBytesAmiga(uint32_t uiStartIdx, bool bDebugPrint, track_metadata_t& rsMeta);
 
     // member variables
 private:
@@ -36,7 +36,6 @@ private:
     const uint32_t    m_uiDeltaMax;
     uint32_t          m_uiSectorDataLength;
     uint16_t          m_usCurrentCRC;
-    uint32_t          m_uiSectorsRead;
 };
 
 

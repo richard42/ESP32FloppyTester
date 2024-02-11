@@ -28,7 +28,6 @@ DecoderMFM::DecoderMFM(const uint16_t *pusDeltaBuffers[], uint32_t uiDeltaMax)
  , m_uiDeltaMax(uiDeltaMax)
  , m_uiSectorDataLength(0)
  , m_usCurrentCRC(0xffff)
- , m_uiSectorsRead(0)
 {
 }
 
@@ -42,10 +41,10 @@ DecoderMFM::~DecoderMFM()
 //////////////////////////////////////////////////////////////////////////
 // modifiers
 
-void DecoderMFM::DecodeTrack(geo_format_t eFormat, bool bDebugPrint)
+void DecoderMFM::DecodeTrack(geo_format_t eFormat, bool bDebugPrint, track_metadata_t& rsMeta)
 {
     // clear sector counter
-    m_uiSectorsRead = 0;
+    rsMeta.ucSectorsFound = 0;
     
     // iterate over all delta samples, looking for markers
     const uint8_t pucSpecialC2[] = { 3,2,3,4,3,  4,2,3,4,3,  4,2,3,4,3, 4,2,2,2,2,2,3,2 };
@@ -122,7 +121,7 @@ void DecoderMFM::DecodeTrack(geo_format_t eFormat, bool bDebugPrint)
         // special case for Amiga
         if (eFormat == FMT_AMIGA && uiFoundZeros >= 12 && pucSpecMatch == pucSpecialA1 && uiNumSpecMatch == 10)
         {
-            ui = ReadSectorBytesAmiga(ui + 1) - 1;
+            ui = ReadSectorBytesAmiga(ui + 1, bDebugPrint, rsMeta) - 1;
             continue;
         }
 
@@ -132,7 +131,8 @@ void DecoderMFM::DecodeTrack(geo_format_t eFormat, bool bDebugPrint)
             // found a marker
             if (pucSpecMatch == pucSpecialC2)
             {
-                Serial.printf("Found Index Access Marker (track start).\r\n");
+                if (bDebugPrint)
+                    Serial.printf("Found Index Access Marker (track start).\r\n");
                 uiFoundZeros = 0;
                 uiNumSpecMatch = 0;
                 pucSpecMatch = NULL;
@@ -140,19 +140,20 @@ void DecoderMFM::DecodeTrack(geo_format_t eFormat, bool bDebugPrint)
             }
             else // (pucSpecMatch == pucSpecialA1)
             {
-                ui = ReadSectorBytesIBM(ui + 1) - 1;
+                ui = ReadSectorBytesIBM(ui + 1, bDebugPrint, rsMeta) - 1;
                 continue;
             }
         }
     }
 
-    Serial.printf("%i %s sectors read.\r\n", m_uiSectorsRead, (eFormat == FMT_IBM ? "IBM" : "Amiga"));
+    if (bDebugPrint)
+        Serial.printf("%i %s sectors read.\r\n", rsMeta.ucSectorsFound, (eFormat == FMT_IBM ? "IBM" : "Amiga"));
 }
 
 //////////////////////////////////////////////////////////////////////////
 // private methods
 
-uint32_t DecoderMFM::ReadSectorBytesIBM(uint32_t uiStartIdx)
+uint32_t DecoderMFM::ReadSectorBytesIBM(uint32_t uiStartIdx, bool bDebugPrint, track_metadata_t& rsMeta)
 {
     uint8_t ucBytes[2048];
     uint32_t uiBytesRead = 0;
@@ -168,7 +169,8 @@ uint32_t DecoderMFM::ReadSectorBytesIBM(uint32_t uiStartIdx)
         if (uiDelta & 0x8000)
         {
             // error - long delay
-            Serial.printf("[Sector read error: long delay]\r\n");
+            if (bDebugPrint)
+                Serial.printf("[Sector read error: long delay]\r\n");
             return ui + 2;
         }
         const float fWavelen = uiDelta / 80.0f;
@@ -203,7 +205,8 @@ uint32_t DecoderMFM::ReadSectorBytesIBM(uint32_t uiStartIdx)
             }
             else
             {
-                Serial.printf("[Sector read error: missing clock pulse]\r\n");
+                if (bDebugPrint)
+                    Serial.printf("[Sector read error: missing clock pulse]\r\n");
                 return ui + 1;
             }
         }
@@ -227,14 +230,16 @@ uint32_t DecoderMFM::ReadSectorBytesIBM(uint32_t uiStartIdx)
                 // Sector data
                 if (m_uiSectorDataLength == 0)
                 {
-                    Serial.printf("[Sector read error: no ID record, unknown sector length]\r\n");
+                    if (bDebugPrint)
+                        Serial.printf("[Sector read error: no ID record, unknown sector length]\r\n");
                     return ui + 1;
                 }
                 uiExpectedBytes = m_uiSectorDataLength + 3;
             }
             else
             {
-                Serial.printf("[Sector read error: invalid address mark 0x%02x]\r\n", ucBytes[0]);
+                if (bDebugPrint)
+                    Serial.printf("[Sector read error: invalid address mark 0x%02x]\r\n", ucBytes[0]);
                 return ui + 1;
             }
             // initialize CRC calculation
@@ -250,25 +255,42 @@ uint32_t DecoderMFM::ReadSectorBytesIBM(uint32_t uiStartIdx)
             if (ucBytes[0] == 0xfe)
             {
                 // Sector ID record
-                Serial.printf("IBM Sector ID: Cylinder %i, Side %i, Sector %i, CRC=%04x (%s)\r\n", ucBytes[1], ucBytes[2], ucBytes[3],
-                              (ucBytes[5] << 8) + ucBytes[6], (m_usCurrentCRC == 0 ? "GOOD" : "BAD"));
+                if (bDebugPrint)
+                    Serial.printf("IBM Sector ID: Cylinder %i, Side %i, Sector %i, CRC=%04x (%s)\r\n", ucBytes[1], ucBytes[2], ucBytes[3],
+                                  (ucBytes[5] << 8) + ucBytes[6], (m_usCurrentCRC == 0 ? "GOOD" : "BAD"));
                 m_uiSectorDataLength = 1 << (7 + ucBytes[4]);
+                // set metadata
+                if (rsMeta.ucSectorsFound < 12)
+                {
+                    rsMeta.ucSectorNum[rsMeta.ucSectorsFound] = ucBytes[3];
+                    rsMeta.ucSectorSide[rsMeta.ucSectorsFound] = ucBytes[2];
+                    rsMeta.ucSectorCylinder[rsMeta.ucSectorsFound] = ucBytes[1];
+                    rsMeta.ucSectorGoodID[rsMeta.ucSectorsFound] = (m_usCurrentCRC == 0 ? 1 : 0);
+                }
                 return ui + 1;
             }
             else if (ucBytes[0] == 0xfb)
             {
                 // Sector data
-                m_uiSectorsRead++;
-                Serial.printf("IBM Sector data: %i bytes with CRC=%04x (%s)\r\n", m_uiSectorDataLength,
-                              (ucBytes[m_uiSectorDataLength+1] << 8) + ucBytes[m_uiSectorDataLength+2], (m_usCurrentCRC == 0 ? "GOOD" : "BAD"));
+                const uint16_t usDataCRC = (ucBytes[m_uiSectorDataLength+1] << 8) + ucBytes[m_uiSectorDataLength+2];
+                if (bDebugPrint)
+                    Serial.printf("IBM Sector data: %i bytes with CRC=%04x (%s)\r\n", m_uiSectorDataLength,
+                                  usDataCRC, (m_usCurrentCRC == 0 ? "GOOD" : "BAD"));
                 m_uiSectorDataLength = 0;
+                // set metadata
+                if (rsMeta.ucSectorsFound < 12)
+                {
+                    rsMeta.ucSectorGoodData[rsMeta.ucSectorsFound] = (m_usCurrentCRC == 0 ? 1 : 0);
+                    rsMeta.uiSectorDataCRC[rsMeta.ucSectorsFound] = usDataCRC;
+                }
+                rsMeta.ucSectorsFound++;
                 return ui + 1;
             }
         }
     }
 }
 
-uint32_t DecoderMFM::ReadSectorBytesAmiga(uint32_t uiStartIdx)
+uint32_t DecoderMFM::ReadSectorBytesAmiga(uint32_t uiStartIdx, bool bDebugPrint, track_metadata_t& rsMeta)
 {
     uint8_t ucSwizBytes[540];
     uint8_t ucBytes[540];
@@ -288,7 +310,8 @@ uint32_t DecoderMFM::ReadSectorBytesAmiga(uint32_t uiStartIdx)
         if (uiDelta & 0x8000)
         {
             // error - long delay
-            Serial.printf("[Sector read error: long delay] (position %i/%i)\r\n", uiDeltaIdx, m_uiDeltaMax);
+            if (bDebugPrint)
+                Serial.printf("[Sector read error: long delay] (position %i/%i)\r\n", uiDeltaIdx, m_uiDeltaMax);
             return uiDeltaIdx + 2;
         }
         const float fWavelen = uiDelta / 80.0f;
@@ -323,7 +346,8 @@ uint32_t DecoderMFM::ReadSectorBytesAmiga(uint32_t uiStartIdx)
             }
             else
             {
-                Serial.printf("[Sector read error: missing clock pulse] (position %i/%i)\r\n", uiDeltaIdx, m_uiDeltaMax);
+                if (bDebugPrint)
+                    Serial.printf("[Sector read error: missing clock pulse] (position %i/%i)\r\n", uiDeltaIdx, m_uiDeltaMax);
                 return uiDeltaIdx + 1;
             }
         }
@@ -390,12 +414,23 @@ uint32_t DecoderMFM::ReadSectorBytesAmiga(uint32_t uiStartIdx)
             uiCalcDataCk   |= (usDataCk   & (1 << ui4)) << ui4;
         }
         // Sector data
-        m_uiSectorsRead++;
         uint32_t uiHeaderCk = (ucBytes[20] << 24) + (ucBytes[21] << 16) + (ucBytes[22] << 8) + ucBytes[23];
         uint32_t uiDataCk =   (ucBytes[24] << 24) + (ucBytes[25] << 16) + (ucBytes[26] << 8) + ucBytes[27];
-        Serial.printf("Amiga Sector format: %02x  track: %i  Sector: %2i  SectorsToGap: %2i  Header cksum: %08x (%s)  Data cksum: %08x (%s)\r\n",
-                      ucBytes[0], ucBytes[1], ucBytes[2], ucBytes[3],
-                      uiHeaderCk, (uiHeaderCk == uiCalcHeaderCk ? "GOOD" : "BAD"), uiDataCk, (uiDataCk == uiCalcDataCk ? "GOOD" : "BAD"));
+        if (bDebugPrint)
+            Serial.printf("Amiga Sector format: %02x  track: %i  Sector: %2i  SectorsToGap: %2i  Header cksum: %08x (%s)  Data cksum: %08x (%s)\r\n",
+                          ucBytes[0], ucBytes[1], ucBytes[2], ucBytes[3],
+                          uiHeaderCk, (uiHeaderCk == uiCalcHeaderCk ? "GOOD" : "BAD"), uiDataCk, (uiDataCk == uiCalcDataCk ? "GOOD" : "BAD"));
+        // set metadata
+        if (rsMeta.ucSectorsFound < 12)
+        {
+            rsMeta.ucSectorNum[rsMeta.ucSectorsFound] = ucBytes[2] + 1;
+            rsMeta.ucSectorSide[rsMeta.ucSectorsFound] = ucBytes[1] & 1;
+            rsMeta.ucSectorCylinder[rsMeta.ucSectorsFound] = ucBytes[1] >> 1;
+            rsMeta.ucSectorGoodID[rsMeta.ucSectorsFound] = ((uiHeaderCk == uiCalcHeaderCk && ucBytes[0] == 0xff) ? 1 : 0);
+            rsMeta.ucSectorGoodData[rsMeta.ucSectorsFound] = (uiDataCk == uiCalcDataCk ? 1 : 0);
+            rsMeta.uiSectorDataCRC[rsMeta.ucSectorsFound] = uiDataCk;
+        }
+        rsMeta.ucSectorsFound++;
         return uiDeltaIdx + 1;
     }
 }

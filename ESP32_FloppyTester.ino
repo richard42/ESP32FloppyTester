@@ -83,8 +83,11 @@ void seek_track(int iTargetTrack);
 void track_read(void);
 void track_erase(void);
 void track_write_pattern(encoding_pattern_t ePattern);
+void disk_read(void);
 
 // command helpers
+uint32_t format_track_metadata(int iSide, int iTrack, track_metadata_t& rsMeta, char *pchText);
+void calculate_track_metadata(track_metadata_t& rsMeta);
 void capture_track_data(void);
 void write_track_data(void);
 float calculate_interval_spread(void);
@@ -431,6 +434,10 @@ void loop()
         }
         track_write_pattern(ePattern);
     }
+    else if (strInput == "disk read")
+    {
+        disk_read();
+    }
     else
     {
         Serial.write("Unknown command.\r\n");
@@ -467,6 +474,7 @@ void display_help(void)
     Serial.write("                SIXES     - all sector data is alternating bits (MFM 6us intervals).\r\n");
     Serial.write("                EIGHTS    - all sector data is alternating bits (MFM 8us intervals).\r\n");
     Serial.write("                RANDOM    - all sector data is random.\r\n");
+    Serial.write("    DISK READ      - read all tracks on disk and display track/sector status\r\n");
     Serial.write("\r\n");
 }
 
@@ -1013,7 +1021,8 @@ void track_read(void)
         {
             Serial.write("Double Density MFM track detected.\r\n");
             DecoderMFM decoder((const uint16_t **) l_pusDeltaBuffers, l_uiDeltaPos);
-            decoder.DecodeTrack(l_eGeoFormat, true);
+            track_metadata_t sMeta;
+            decoder.DecodeTrack(l_eGeoFormat, true, sMeta);
         }
         else if ((float) (auiCountByWavelen[3] + auiCountByWavelen[5] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
         {
@@ -1230,8 +1239,193 @@ void track_write_pattern(encoding_pattern_t ePattern)
     Serial.printf("Wrote %i flux transitions in %.3f milliseconds.\r\n", l_uiDeltaCnt, (uiEndingCycles - uiStartingCycles) / 240000.0f);
 }
 
+void disk_read(void)
+{
+    // make sure pins are defined
+    if (l_iPinSelect == -1 || l_iPinMotor == -1)
+    {
+        Serial.write("Error: select/motor pin(s) not set. Use DETECT PINS\r\n");
+        return;
+    }
+
+    // start at track 0
+    if (!seek_home(true))
+        return;
+    const bool bWasDriveMotorOn = l_bDriveMotorOn;
+    l_bDriveMotorOn = true;                         // set to true so future seek/read operations don't turn off the motor
+
+    // inform user of which sides are being read
+    if (l_iGeoSides == 1)
+    {
+        Serial.printf("Reading disk side %i.\r\n", l_iDriveSide);
+    }
+    else // l_iGeoSides == 2
+    {
+        Serial.printf("Reading disk sides 0 and 1.\r\n");
+    }
+
+    // iterate over all tracks
+    uint32_t uiSectorErrors = 0;
+    for (int iTrack = 0; iTrack < l_iGeoTracks; iTrack++)
+    {
+        // seek to track
+        if (iTrack != 0)
+            seek_track(iTrack);
+
+        // wait 20ms for index pulse to be valid
+        delay_micros(20000);
+
+        // we will handle 1-sided and 2-sided completely differently
+        if (l_iGeoSides == 1)
+        {
+            char chSectorText[96];
+            track_metadata_t sMeta;
+            capture_track_data();
+            calculate_track_metadata(sMeta);
+            uiSectorErrors += format_track_metadata(l_iDriveSide, iTrack, sMeta, chSectorText);
+            Serial.printf("%2i %s\r\n", iTrack, chSectorText);
+        }
+        else // (l_iGeoSides == 2)
+        {
+            track_metadata_t sMeta0, sMeta1;
+            // select side 0
+            l_iDriveSide = 0;
+            gpio_set_level(FDC_SIDE1, 0);
+            // call core track-reading function, then calculate metadata for track
+            capture_track_data();
+            calculate_track_metadata(sMeta0);
+            // select side 1
+            l_iDriveSide = 1;
+            gpio_set_level(FDC_SIDE1, 1);
+            // call core track-reading function, then calculate metadata for track
+            capture_track_data();
+            calculate_track_metadata(sMeta1);
+            char chSide0[96];
+            char chSide1[96];
+            uiSectorErrors += format_track_metadata(0, iTrack, sMeta0, chSide0);
+            uiSectorErrors += format_track_metadata(1, iTrack, sMeta1, chSide1);
+            Serial.printf("%2i %s |  %s\r\n", iTrack, chSide0, chSide1);
+        }
+    }
+
+    // turn off the motor if necessary
+    if (!bWasDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+        l_bDriveMotorOn = false;
+    }
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Command Helper Functions
+
+uint32_t format_track_metadata(int iSide, int iTrack, track_metadata_t& rsMeta, char *pchText)
+{
+    uint32_t uiSectorErrors = 0;
+    
+    // print flux metrics
+    sprintf(pchText, "(%5i %3.1f) ", rsMeta.uiFluxCount, rsMeta.fPulseIntervalSpread);
+
+    // print modulation type
+    if (rsMeta.eModulation == MOD_MFM)
+    {
+        sprintf(pchText + strlen(pchText), "MFM %2i Sectors: ", rsMeta.ucSectorsFound);
+    }
+    else if (rsMeta.eModulation == MOD_GCR)
+    {
+        sprintf(pchText + strlen(pchText), "GCR %2i Sectors: ", rsMeta.ucSectorsFound);
+    }
+    else // (rsMeta.eModulation == MOD_INVALID)
+    {
+        strcat(pchText, "No sectors found");
+        for (int iSector = 0; iSector < l_iGeoSectors; iSector++)
+            strcat(pchText, "--- ");
+        return l_iGeoSectors;
+    }
+
+    // print sector statuses
+    for (int iSector = 1; iSector <= l_iGeoSectors; iSector++)
+    {
+        // find this sector in the metadata
+        int iSectorIdx;
+        for (iSectorIdx = 0; iSectorIdx < rsMeta.ucSectorsFound; iSectorIdx++)
+        {
+            if (rsMeta.ucSectorNum[iSectorIdx] == iSector)
+                break;
+        }
+        // print sector status flags
+        if (iSectorIdx == rsMeta.ucSectorsFound)
+        {
+            strcat(pchText, "--- ");
+            uiSectorErrors++;
+        }
+        else
+        {
+            // flag 0: ID matches sector position
+            // flag 1: ID CRC matches
+            // flag 2: Data CRC matches
+            char chFlags[6];
+            bool bIdMatch = rsMeta.ucSectorSide[iSectorIdx] == iSide && rsMeta.ucSectorCylinder[iSectorIdx] == iTrack;
+            bool bIdCRCGood = rsMeta.ucSectorGoodID[iSectorIdx];
+            bool bDataCRCGood = rsMeta.ucSectorGoodData[iSectorIdx];
+            sprintf(chFlags, "%c%c%c ", (bIdMatch ? 'O' : 'X'), (bIdCRCGood ? 'O' : 'X'), (bDataCRCGood ? 'O' : 'X'));
+            strcat(pchText, chFlags);
+        }
+    }
+
+    return uiSectorErrors;
+}
+
+void calculate_track_metadata(track_metadata_t& rsMeta)
+{
+    // clear track metadata structure
+    memset(&rsMeta, 0, sizeof(track_metadata_t));
+    
+    // if we got less than 100 flux transitions then something is completely broken
+    if (!l_bRecording)
+    {
+        // zero flux transitions
+        return;
+    }
+    rsMeta.uiFluxCount = l_uiDeltaCnt;
+    if (l_uiDeltaCnt < 100)
+        return;
+
+    // calculate 90% pulse interval spread
+    rsMeta.fPulseIntervalSpread = calculate_interval_spread();
+
+    // calculate histogram
+    uint32_t auiCountByWavelen[10];
+    for (uint32_t ui = 0; ui < l_uiDeltaPos; ui++)
+    {
+        uint32_t uiDelta = DELTA_ITEM(ui);
+        if (uiDelta & 0x8000)
+        {
+            ui++;
+            continue;
+        }
+        const float fWavelen = uiDelta / 80.0f;
+        const uint32_t uiWavelen = floorf(fWavelen + 0.5f);
+        if (uiWavelen < 10)
+        {
+            auiCountByWavelen[uiWavelen]++;
+        }
+    }
+    
+    // detect track encoding
+    if ((float) (auiCountByWavelen[4] + auiCountByWavelen[6] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
+    {
+        rsMeta.eModulation = MOD_MFM;
+        DecoderMFM decoder((const uint16_t **) l_pusDeltaBuffers, l_uiDeltaPos);
+        decoder.DecodeTrack(l_eGeoFormat, false, rsMeta);
+    }
+    else if ((float) (auiCountByWavelen[3] + auiCountByWavelen[5] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
+    {
+        rsMeta.eModulation = MOD_GCR;
+    }
+
+}
 
 void capture_track_data(void)
 {
