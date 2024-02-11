@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////////
 // ESP32_FloppyTester
-// DecoderMFM.cpp
+// CodecMFM.cpp
 // 
 // Copyright (C) 2024, All Rights Reserved.
 //
@@ -16,7 +16,7 @@
 #include <map>
 
 #include "FloppyTester.h"
-#include "DecoderMFM.h"
+#include "CodecMFM.h"
 
 #define DELTA_ITEM(X) m_pusDeltaBuffers[(X)>>12][(X)&0x0fff]
 

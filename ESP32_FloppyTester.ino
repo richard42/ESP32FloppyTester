@@ -23,7 +23,7 @@
 #include "esp_intr_alloc.h"
 
 #include "FloppyTester.h"
-#include "DecoderMFM.h"
+#include "CodecMFM.h"
 
 //////////////////////////////////////////////////////////////////////////
 // Definitions
