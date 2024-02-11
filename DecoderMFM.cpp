@@ -276,19 +276,19 @@ uint32_t DecoderMFM::ReadSectorBytesAmiga(uint32_t uiStartIdx)
     uint32_t uiLastBit = 1;
     uint32_t uiPriorBits = 0;
     uint32_t uiNumPriorBits = 0;
-    for (volatile uint32_t ui = uiStartIdx; ui < m_uiDeltaMax; ui++)
+    for (volatile uint32_t uiDeltaIdx = uiStartIdx; uiDeltaIdx < m_uiDeltaMax; uiDeltaIdx++)
     {
-        if (ui >= m_uiDeltaMax)  // this is to work around some horrible compiler bug
+        if (uiDeltaIdx >= m_uiDeltaMax)  // this is to work around some horrible compiler bug
         {
-            return ui;
+            return uiDeltaIdx;
         }
         // get binned time delta value and bail out if long delay is found
-        const uint32_t uiDelta = DELTA_ITEM(ui);
+        const uint32_t uiDelta = DELTA_ITEM(uiDeltaIdx);
         if (uiDelta & 0x8000)
         {
             // error - long delay
-            Serial.printf("[Sector read error: long delay] (position %i/%i)\r\n", ui, m_uiDeltaMax);
-            return ui + 2;
+            Serial.printf("[Sector read error: long delay] (position %i/%i)\r\n", uiDeltaIdx, m_uiDeltaMax);
+            return uiDeltaIdx + 2;
         }
         const float fWavelen = uiDelta / 80.0f;
         const uint32_t uiWavelen = floorf(fWavelen / 2.0f + 0.5f);
@@ -322,8 +322,8 @@ uint32_t DecoderMFM::ReadSectorBytesAmiga(uint32_t uiStartIdx)
             }
             else
             {
-                Serial.printf("[Sector read error: missing clock pulse] (position %i/%i)\r\n", ui, m_uiDeltaMax);
-                return ui + 1;
+                Serial.printf("[Sector read error: missing clock pulse] (position %i/%i)\r\n", uiDeltaIdx, m_uiDeltaMax);
+                return uiDeltaIdx + 1;
             }
         }
         // handle byte output
@@ -395,7 +395,7 @@ uint32_t DecoderMFM::ReadSectorBytesAmiga(uint32_t uiStartIdx)
         Serial.printf("Amiga Sector format: %02x  track: %i  Sector: %2i  SectorsToGap: %2i  Header cksum: %08x (%s)  Data cksum: %08x (%s)\r\n",
                       ucBytes[0], ucBytes[1], ucBytes[2], ucBytes[3],
                       uiHeaderCk, (uiHeaderCk == uiCalcHeaderCk ? "GOOD" : "BAD"), uiDataCk, (uiDataCk == uiCalcDataCk ? "GOOD" : "BAD"));
-        return ui + 1;
+        return uiDeltaIdx + 1;
     }
 }
 
