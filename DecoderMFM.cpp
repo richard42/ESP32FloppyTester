@@ -119,7 +119,7 @@ void DecoderMFM::DecodeTrack(geo_format_t eFormat, bool bDebugPrint)
         uiNumSpecMatch++;
         
         // special case for Amiga
-        if (eFormat == FMT_AMIGA && uiFoundZeros <= 18 && uiFoundZeros >= 12 && pucSpecMatch == pucSpecialA1 && uiNumSpecMatch == 10)
+        if (eFormat == FMT_AMIGA && uiFoundZeros >= 12 && pucSpecMatch == pucSpecialA1 && uiNumSpecMatch == 10)
         {
             ui = ReadSectorBytesAmiga(ui + 1) - 1;
             continue;
