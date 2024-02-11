@@ -8,6 +8,7 @@
 // Date:   2024/01/28
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <math.h>
 
 #include <Arduino.h>
@@ -239,14 +240,13 @@ uint32_t DecoderMFM::ReadSectorBytesIBM(uint32_t uiStartIdx)
             // initialize CRC calculation
             uint8_t ucFirstBytes[3] = { 0xa1, 0xa1, 0xa1 };
             m_usCurrentCRC = 0xffff;
-            advance_crc16(ucFirstBytes, 3);
+            advance_crc16(m_usCurrentCRC, ucFirstBytes, 3);
         }
         // handle block completion
         if (uiExpectedBytes > 0 && uiBytesRead == uiExpectedBytes)
         {
-            m_uiSectorsRead++;
             // calculate CRC
-            advance_crc16(ucBytes, uiBytesRead);
+            advance_crc16(m_usCurrentCRC, ucBytes, uiBytesRead);
             if (ucBytes[0] == 0xfe)
             {
                 // Sector ID record
@@ -258,6 +258,7 @@ uint32_t DecoderMFM::ReadSectorBytesIBM(uint32_t uiStartIdx)
             else if (ucBytes[0] == 0xfb)
             {
                 // Sector data
+                m_uiSectorsRead++;
                 Serial.printf("IBM Sector data: %i bytes with CRC=%04x (%s)\r\n", m_uiSectorDataLength,
                               (ucBytes[m_uiSectorDataLength+1] << 8) + ucBytes[m_uiSectorDataLength+2], (m_usCurrentCRC == 0 ? "GOOD" : "BAD"));
                 m_uiSectorDataLength = 0;
@@ -400,16 +401,277 @@ uint32_t DecoderMFM::ReadSectorBytesAmiga(uint32_t uiStartIdx)
 }
 
 //////////////////////////////////////////////////////////////////////////
-// private helper methods
+// static helper method
 
-void DecoderMFM::advance_crc16(const uint8_t* data_p, uint32_t length)
+void DecoderMFM::advance_crc16(uint16_t& usCurrentCRC, const uint8_t* data_p, uint32_t length)
 {
     unsigned char x;
 
     while (length--)
     {
-        x = m_usCurrentCRC >> 8 ^ *data_p++;
+        x = usCurrentCRC >> 8 ^ *data_p++;
         x ^= x>>4;
-        m_usCurrentCRC = (m_usCurrentCRC << 8) ^ ((unsigned short)(x << 12)) ^ ((unsigned short)(x <<5)) ^ ((unsigned short)x);
+        usCurrentCRC = (usCurrentCRC << 8) ^ ((unsigned short)(x << 12)) ^ ((unsigned short)(x <<5)) ^ ((unsigned short)x);
     }
+}
+
+//////////////////////////////////////////////////////////////////////////
+// constructor/destructor for encoding class
+
+EncoderMFM::EncoderMFM(uint16_t *pusDeltaBuffers[], geo_format_t eFormat, int iSides, int iTracks, int iSectors)
+ : m_pusDeltaBuffers(pusDeltaBuffers)
+ , m_uiDeltaPos(0)
+ , m_eGeoFormat(eFormat)
+ , m_iGeoSides(iSides)
+ , m_iGeoTracks(iTracks)
+ , m_iGeoSectors(iSectors)
+ , m_iOldBit(0)
+ , m_iOldestBit(0)
+{
+}
+
+EncoderMFM::~EncoderMFM()
+{
+}
+
+//////////////////////////////////////////////////////////////////////////
+// modifiers for encoding class
+
+uint32_t EncoderMFM::EncodeTrack(encoding_pattern_t ePattern, int iDriveTrack, int iDriveSide)
+{
+    //const uint32_t uiBytesPreIndexGap = 96;
+    //const uint32_t uiBytesIndexGap = 65;
+    //const uint32_t uiBytesIDGap = 7 + 37;    // including sector header
+    //const uint32_t uiBytesSectorData = 515;
+    //const uint32_t uiBytesDataGap = 69;
+    //const uint32_t uiBytesGap4 = 652;
+    // total = 6396 bytes
+    // 200ms / 4us = 50,000 bits / 8 = 6250 bytes per track
+
+    // pre-index gap
+    for (uint32_t ui = 0; ui < 80; ui++)
+    {
+        WriteByte(0x4e);
+    }
+    for (uint32_t ui = 0; ui < 12; ui++)
+    {
+        WriteByte(0x00);
+    }
+    WriteSpecialC2C2C2();
+    WriteByte(0xfc);
+
+    // post-index gap
+    for (uint32_t ui = 0; ui < 50; ui++)
+    {
+        WriteByte(0x4e);
+    }
+    for (uint32_t ui = 0; ui < 12; ui++)
+    {
+        WriteByte(0x00);
+    }
+    WriteSpecialA1A1A1();
+
+    for (uint32_t uiSector = 1; uiSector <= m_iGeoSectors; uiSector++)
+    {
+        uint8_t ucSectorData[512];
+        calc_sector_data(ePattern, uiSector, ucSectorData);
+        // ID Record
+        WriteByte(0xfe);
+        WriteByte(iDriveTrack);
+        WriteByte(iDriveSide);
+        WriteByte(uiSector);
+        WriteByte(2);              // Sector Length 2 == 512 bytes
+        const uint16_t usIDCRC = calc_id_crc(iDriveSide, iDriveTrack, uiSector);
+        WriteByte(usIDCRC >> 8);
+        WriteByte(usIDCRC & 0xff);
+        // ID Gap
+        for (uint32_t ui = 0; ui < 22; ui++)
+        {
+            WriteByte(0x4e);
+        }
+        for (uint32_t ui = 0; ui < 12; ui++)
+        {
+            WriteByte(0x00);
+        }
+        WriteSpecialA1A1A1();
+        // Data field record
+        WriteByte(0xfb);
+        for (uint32_t uiDataIdx = 0; uiDataIdx < 512; uiDataIdx++)
+        {
+            WriteByte(ucSectorData[uiDataIdx]);
+        }
+        const uint16_t usDataCRC = calc_data_crc(ucSectorData);
+        WriteByte(usDataCRC >> 8);
+        WriteByte(usDataCRC & 0xff);
+        // data gap
+        if (uiSector < m_iGeoSectors)
+        {
+            for (uint32_t ui = 0; ui < 54; ui++)
+            {
+                WriteByte(0x4e);
+            }
+            for (uint32_t ui = 0; ui < 12; ui++)
+            {
+                WriteByte(0x00);
+            }
+            WriteSpecialA1A1A1();
+        }
+    }
+
+    // gap 4
+    for (uint32_t ui = 0; ui < 506; ui++)
+    {
+        WriteByte(0x4e);
+    }
+
+    return m_uiDeltaPos;
+}
+
+//////////////////////////////////////////////////////////////////////////
+// private helper methods
+
+void EncoderMFM::WriteBit(int iBit)
+{
+    if (iBit == m_iOldBit)
+    {
+        if (m_iOldestBit == 1 && m_iOldBit == 0)
+            DELTA_ITEM(m_uiDeltaPos) = 6 * 80;
+        else
+            DELTA_ITEM(m_uiDeltaPos) = 4 * 80;
+        m_uiDeltaPos++;
+        m_iOldestBit = m_iOldBit;
+        return;
+    }
+    else if (m_iOldBit == 0 && iBit == 1)
+    {
+        if (m_iOldestBit == 1)
+            DELTA_ITEM(m_uiDeltaPos) = 8 * 80;
+        else
+            DELTA_ITEM(m_uiDeltaPos) = 6 * 80;
+        m_uiDeltaPos++;
+        m_iOldestBit = 0;
+        m_iOldBit = 1;
+        return;
+    }
+    // m_iOldBit == 1 && iBit == 0
+    m_iOldestBit = 1;
+    m_iOldBit = 0;
+    return;
+}
+
+void EncoderMFM::WriteByte(int iByte)
+{
+    for (uint32_t uiBitIdx = 0; uiBitIdx < 8; uiBitIdx++)
+    {
+        WriteBit((iByte >> (7 - uiBitIdx)) & 1);
+    }
+}
+
+void EncoderMFM::WriteSpecialC2C2C2(void)
+{
+    DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 4 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 8 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
+  
+    DELTA_ITEM(m_uiDeltaPos) = 8 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 4 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 8 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
+
+    DELTA_ITEM(m_uiDeltaPos) = 8 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 4 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 8 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
+
+    m_iOldestBit = 1;
+    m_iOldBit = 0;
+}
+
+void EncoderMFM::WriteSpecialA1A1A1(void)
+{
+    DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 8 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 8 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
+  
+    DELTA_ITEM(m_uiDeltaPos) = 4 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 8 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 8 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
+
+    DELTA_ITEM(m_uiDeltaPos) = 4 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 8 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 8 * 80;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
+
+    m_iOldestBit = 0;
+    m_iOldBit = 1;
+}
+
+void EncoderMFM::calc_sector_data(encoding_pattern_t ePattern, uint32_t uiSectorNum, uint8_t *pucSectorData)
+{
+    // seed PRNG if necessary
+    if (m_eGeoFormat == ENC_RANDOM)
+    {
+        uint32_t uiCurCycles;
+        asm volatile("  rsr %0, ccount                \n"
+                     : "=a"(uiCurCycles) );
+        srand(uiCurCycles);
+    }
+
+    // write bytes
+    for (uint32_t uiByteIdx = 0; uiByteIdx < 512; uiByteIdx++)
+    {
+        switch(ePattern)
+        {
+            case ENC_ZEROS:
+                pucSectorData[uiByteIdx] = 0x00;
+                break;
+            case ENC_ONES:
+                pucSectorData[uiByteIdx] = 0xFF;
+                break;
+            case ENC_SIXES:
+                if ((uiByteIdx % 3) == 0)
+                    pucSectorData[uiByteIdx] = 0x24;
+                else if ((uiByteIdx % 3) == 1)
+                    pucSectorData[uiByteIdx] = 0x92;
+                else // ((uiByteIdx % 3) == 2)
+                    pucSectorData[uiByteIdx] = 0x49;
+                break;
+            case ENC_EIGHTS:
+                pucSectorData[uiByteIdx] = 0x55;
+                break;
+            case ENC_RANDOM:
+                pucSectorData[uiByteIdx] = (rand() & 0xff);
+                break;
+        }
+    }
+}
+
+uint16_t EncoderMFM::calc_id_crc(uint32_t uiDriveSide, uint32_t uiDriveTrack, uint32_t uiSectorNum)
+{
+    uint8_t ucRecordBytes[8] = { 0xa1, 0xa1, 0xa1, 0xfe, uiDriveTrack, uiDriveSide, uiSectorNum, 2 };
+
+    uint16_t usCurrentCRC = 0xffff;
+    DecoderMFM::advance_crc16(usCurrentCRC, ucRecordBytes, 8);
+    return usCurrentCRC;
+}
+
+uint16_t EncoderMFM::calc_data_crc(uint8_t *pucSectorData)
+{
+    uint16_t usCurrentCRC = 0xffff;
+
+    uint8_t ucDataAddrMarkBytes[4] = { 0xa1, 0xa1, 0xa1, 0xfb };
+    DecoderMFM::advance_crc16(usCurrentCRC, ucDataAddrMarkBytes, 4);
+
+    DecoderMFM::advance_crc16(usCurrentCRC, pucSectorData, 512);
+
+    return usCurrentCRC;
 }

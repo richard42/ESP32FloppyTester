@@ -12,6 +12,14 @@
 
 typedef enum _geo_format { FMT_INVALID, FMT_IBM, FMT_AMIGA } geo_format_t;
 
-
+typedef enum _encoding_pattern
+{
+  ENC_INVALID,
+  ENC_ZEROS,
+  ENC_ONES,
+  ENC_SIXES,
+  ENC_EIGHTS,
+  ENC_RANDOM
+} encoding_pattern_t;
 
 #endif // FLOPPY_TESTER_H

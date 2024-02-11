@@ -82,9 +82,11 @@ void seek_test(void);
 void seek_track(int iTargetTrack);
 void track_read(void);
 void track_erase(void);
+void track_write_pattern(encoding_pattern_t ePattern);
 
 // command helpers
 void capture_track_data(void);
+void write_track_data(void);
 float calculate_interval_spread(void);
 
 // generic helpers
@@ -409,6 +411,26 @@ void loop()
     {
         track_erase();
     }
+    else if (strInput.find("track write") == 0)
+    {
+        encoding_pattern_t ePattern;
+        if (strInput == "track write zeros")
+            ePattern = ENC_ZEROS;
+        else if (strInput == "track write ones")
+            ePattern = ENC_ONES;
+        else if (strInput == "track write sixes")
+            ePattern = ENC_SIXES;
+        else if (strInput == "track write eights")
+            ePattern = ENC_EIGHTS;
+        else if (strInput == "track write random")
+            ePattern = ENC_RANDOM;
+        else
+        {
+            Serial.printf("Error: invalid TRACK WRITE pattern: '%s'.\r\n", strInput.c_str() + 11);
+            return;
+        }
+        track_write_pattern(ePattern);
+    }
     else
     {
         Serial.write("Unknown command.\r\n");
@@ -439,6 +461,12 @@ void display_help(void)
     Serial.write("             AMIGA                         - set Amiga format, 2 sides, 80 tracks, 11 sectors.\r\n");
     Serial.write("    TRACK READ     - read current track and print decoded data summary (requires formatted disk).\r\n");
     Serial.write("    TRACK ERASE    - erase current track and validate erasure (destroys data on disk).\r\n");
+    Serial.write("    TRACK WRITE ...- write track data using current format (destroys data on disk).\r\n");
+    Serial.write("                ZEROS     - all sector data is binary 0 (MFM 4us intervals).\r\n");
+    Serial.write("                ONES      - all sector data is binary 1 (MFM 4us intervals).\r\n");
+    Serial.write("                SIXES     - all sector data is alternating bits (MFM 6us intervals).\r\n");
+    Serial.write("                EIGHTS    - all sector data is alternating bits (MFM 8us intervals).\r\n");
+    Serial.write("                RANDOM    - all sector data is random.\r\n");
     Serial.write("\r\n");
 }
 
@@ -1074,6 +1102,134 @@ void track_erase(void)
                   fSpreadUS, (fSpreadUS < 5.0f ? "is NOT erased. Some patterns are still present" : "appears to be random, suggesting erase was successful"));
 }
 
+void track_write_pattern(encoding_pattern_t ePattern)
+{
+    // make sure pins are defined
+    if (l_iPinSelect == -1 || l_iPinMotor == -1)
+    {
+        Serial.write("Error: select/motor pin(s) not set. Use DETECT PINS\r\n");
+        return;
+    }
+
+    // make sure we know what track we're on
+    if (l_iDriveTrack == -1)
+    {
+        Serial.write("Error: track position not known. You must use \"SEEK HOME\" first.\r\n");
+        return;
+    }
+
+    // validate format type
+    if (l_eGeoFormat != FMT_IBM)
+    {
+        Serial.write("Error: only IBM format is current supported for track writing.\r\n");
+        return;
+    }
+    
+    // create an encoder, and write out pulse intervals for the given data pattern
+    EncoderMFM encoder(l_pusDeltaBuffers, l_eGeoFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
+    uint32_t uiDeltaMax = encoder.EncodeTrack(ePattern, l_iDriveTrack, l_iDriveSide);
+
+    // select the drive, if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 1);
+        delay_micros(1000);
+    }
+
+    // check the write protect status
+    if (gpio_get_level(FDC_WPT))
+    {
+        Serial.write("Error: write-protect is enabled on disk.\r\n");
+        if (!l_bDriveMotorOn)
+        {
+            gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        }
+        return;
+    }
+
+    // turn on the motor if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinMotor, 1);
+        // wait 0.5 seconds for speed to settle
+        delay(TIME_MOTOR_SETTLE);
+    }
+
+    // disable all interrupts during write
+    portDISABLE_INTERRUPTS();
+
+    // wait until index pulse first arrives
+    do {} while (gpio_get_level(FDC_INDEX) == 1);
+    do {} while (gpio_get_level(FDC_INDEX) == 0);
+
+    // set the Write Gate line to erase the track
+    gpio_set_level(FDC_WGATE, 1);
+
+    // write the first pulse 2us after the write gate goes active
+    delay_micros(2);
+    gpio_set_level(FDC_WDATA, 1);
+    delay_micros(1);
+    gpio_set_level(FDC_WDATA, 0);
+
+    // get the starting cycle counter
+    uint32_t uiCurCycles;
+    asm volatile("  rsr %0, ccount                \n"
+                 : "=a"(uiCurCycles) );
+    const uint32_t uiStartingCycles = uiCurCycles;
+
+    // write out all the pulses
+    l_uiDeltaPos = 0;
+    l_uiDeltaCnt = 0;
+    while (l_uiDeltaPos < uiDeltaMax)
+    {
+        // get next delta time
+        uint32_t uiDelta = DELTA_ITEM(l_uiDeltaPos);
+        l_uiDeltaPos++;
+        if (uiDelta & 0x8000)
+        {
+            uiDelta = ((uiDelta & 0x7fff) << 16) + DELTA_ITEM(l_uiDeltaPos);
+            l_uiDeltaPos++;
+        }
+        l_uiDeltaCnt++;
+        // convert to cycles and wait until that time
+        const uint32_t uiDeltaCycles = uiDelta * 3;
+        uint32_t uiTemp;
+        asm volatile("Loop1:                          \n"
+                     "  rsr %0, ccount                \n"
+                     "  sub %0, %0, %1                \n"
+                     "  blt %0, %2, Loop1             \n"
+                     : "=&a"(uiTemp)
+                     : "a"(uiCurCycles), "a"(uiDeltaCycles) );
+        // write pulse
+        gpio_set_level(FDC_WDATA, 1);
+        delay_micros(1);
+        gpio_set_level(FDC_WDATA, 0);
+        // loop back to wait for the next pulse time
+        uiCurCycles += uiDeltaCycles;
+    }
+
+    // disable the Write Gate
+    gpio_set_level(FDC_WGATE, 0);
+
+    // get the ending cycle counter
+    uint32_t uiEndingCycles;
+    asm volatile("  rsr %0, ccount                \n"
+                 : "=a"(uiEndingCycles) );
+
+    // re-enable interrupt
+    portENABLE_INTERRUPTS();
+
+    // turn off the motor if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+    }
+
+    // print a little info
+    Serial.printf("Wrote %i flux transitions in %.3f milliseconds.\r\n", l_uiDeltaCnt, (uiEndingCycles - uiStartingCycles) / 240000.0f);
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Command Helper Functions
 
@@ -1209,13 +1365,13 @@ static void IRAM_ATTR onSignalEdge(void *pParams)
 void delay_micros(uint32_t uiMicros)
 {
     uint32_t uiCycles = uiMicros * 240 - 25;
-    uint32_t uiEnd, uiCur;
+    uint32_t uiStart, uiCur;
     asm volatile("  rsr %0, ccount                \n"
-                 "  add %0, %2, %0                \n"
                  "Loop0:                          \n"
                  "  rsr %1, ccount                \n"
-                 "  blt %1, %0, Loop0             \n"
-                 : "=&a"(uiEnd), "=a"(uiCur)
+                 "  sub %1, %1, %0                \n"
+                 "  blt %1, %2, Loop0             \n"
+                 : "=&a"(uiStart), "=&a"(uiCur)
                  : "a"(uiCycles) );
 }
 
