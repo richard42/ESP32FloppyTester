@@ -86,13 +86,14 @@ void track_write_pattern(encoding_pattern_t ePattern);
 void disk_read(void);
 void disk_erase(void);
 void disk_write_pattern(encoding_pattern_t ePattern);
+void disk_readwrite_test(void);
 
 // command helpers
 uint32_t format_track_metadata(int iSide, int iTrack, track_metadata_t& rsMeta, char *pchText);
 void calculate_track_metadata(track_metadata_t& rsMeta);
 void capture_track_data(void);
 float record_track_data(uint32_t uiDeltaMax);
-void write_track_data(void);
+void test_track_patterns(char *pchResults);
 float calculate_interval_spread(void);
 
 // generic helpers
@@ -465,6 +466,10 @@ void loop()
         }
         disk_write_pattern(ePattern);
     }
+    else if (strInput == "disk rwtest")
+    {
+        disk_readwrite_test();
+    }
     else
     {
         Serial.write("Unknown command.\r\n");
@@ -504,6 +509,7 @@ void display_help(void)
     Serial.write("    DISK READ      - read all tracks on disk and display track/sector status.\r\n");
     Serial.write("    DISK ERASE     - erase all tracks on the disk (destroys data on disk).\r\n");
     Serial.write("    DISK WRITE ... - write all tracks on disk with current format and given pattern (destroys data on disk).\r\n");
+    Serial.write("    DISK RWTEST    - write and verify all tracks on disks with 4 different patterns (destroys data on disk).\r\n");
     Serial.write("\r\n");
 }
 
@@ -1282,6 +1288,7 @@ void disk_read(void)
             Serial.printf("%2i %s |  %s\r\n", l_iDriveTrack, chSide0, chSide1);
         }
     }
+    l_iDriveTrack--;  // decrement this so it reflects the actual current track number
 
     // turn off the motor if necessary
     if (!bWasDriveMotorOn)
@@ -1406,6 +1413,7 @@ void disk_erase(void)
             gpio_set_level(FDC_WGATE, 0);
         }
     }
+    l_iDriveTrack--;  // decrement this so it reflects the actual current track number
 
     // re-enable interrupts
     portENABLE_INTERRUPTS();
@@ -1529,6 +1537,7 @@ void disk_write_pattern(encoding_pattern_t ePattern)
             record_track_data(uiDeltaMax);
         }
     }
+    l_iDriveTrack--;  // decrement this so it reflects the actual current track number
 
     // re-enable interrupts
     portENABLE_INTERRUPTS();
@@ -1542,6 +1551,190 @@ void disk_write_pattern(encoding_pattern_t ePattern)
     }
 
     Serial.write("Write operation completed.\r\n");
+}
+
+void disk_readwrite_test(void)
+{
+    // make sure pins are defined
+    if (l_iPinSelect == -1 || l_iPinMotor == -1)
+    {
+        Serial.write("Error: select/motor pin(s) not set. Use DETECT PINS\r\n");
+        return;
+    }
+
+    // validate format type
+    if (l_eGeoFormat != FMT_IBM)
+    {
+        Serial.write("Error: only IBM format is current supported for disk writing.\r\n");
+        return;
+    }
+    
+    // select the drive, if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 1);
+        delay_micros(1000);
+    }
+
+    // check the write protect status
+    if (gpio_get_level(FDC_WPT))
+    {
+        Serial.write("Error: write-protect is enabled on disk.\r\n");
+        if (!l_bDriveMotorOn)
+        {
+            gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        }
+        return;
+    }
+
+    // turn on the motor if necessary
+    const bool bWasDriveMotorOn = l_bDriveMotorOn;
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinMotor, 1);
+        // wait 0.5 seconds for speed to settle
+        delay(TIME_MOTOR_SETTLE);
+        l_bDriveMotorOn = true;                         // set to true so future seek/read operations don't turn off the motor
+    }
+
+    // start at track 0
+    if (!seek_home(true))
+    {
+        if (!bWasDriveMotorOn)
+        {
+            gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+            gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+            l_bDriveMotorOn = false;
+        }
+        return;
+    }
+
+    // inform user of which sides are being read
+    if (l_iGeoSides == 1)
+    {
+        Serial.printf("Testing disk side %i.\r\n", l_iDriveSide);
+    }
+    else // l_iGeoSides == 2
+    {
+        Serial.printf("Testing disk sides 0 and 1.\r\n");
+    }
+
+    // disable interrupts
+    portDISABLE_INTERRUPTS();
+
+    // iterate over all tracks
+    uint32_t uiSectorErrors = 0;
+    for (int l_iDriveTrack = 0; l_iDriveTrack < l_iGeoTracks; l_iDriveTrack++)
+    {
+        // seek to track
+        if (l_iDriveTrack != 0)
+            seek_track(l_iDriveTrack);
+
+        // switch sides if necessary
+        if (l_iGeoSides == 2)
+        {
+            l_iDriveSide = 0;
+            gpio_set_level(FDC_SIDE1, 0);
+        }
+
+        // wait 20ms for index pulse to be valid
+        delay_micros(20000);
+
+        // run the pattern read/write test
+        char chResults1[64];
+        test_track_patterns(chResults1);
+
+        // test the other side if necessary
+        if (l_iGeoSides == 2)
+        {
+            // switch to side 1
+            l_iDriveSide = 1;
+            gpio_set_level(FDC_SIDE1, 1);
+            // wait 100us
+            delay_micros(100);
+            // run the test on this side
+            char chResults2[64];
+            test_track_patterns(chResults2);
+            // print results
+            portENABLE_INTERRUPTS();
+            Serial.printf("%2i: %s | %s\r\n", l_iDriveTrack, chResults1, chResults2);
+            portDISABLE_INTERRUPTS();
+        }
+        else
+        {
+            portENABLE_INTERRUPTS();
+            Serial.printf("%2i: %s\r\n", l_iDriveTrack, chResults1);
+            portDISABLE_INTERRUPTS();
+        }
+    }
+    l_iDriveTrack--;  // decrement this so it reflects the actual current track number
+
+    // re-enable interrupts
+    portENABLE_INTERRUPTS();
+
+    // turn off the motor if necessary
+    if (!bWasDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+        l_bDriveMotorOn = false;
+    }
+}
+
+void test_track_patterns(char *pchResults)
+{
+    encoding_pattern_t aePatterns[4] = { ENC_ZEROS, ENC_SIXES, ENC_EIGHTS, ENC_RANDOM };
+
+    // initialize the output result string
+    memset(pchResults, ' ', 5 * l_iGeoSectors - 1);
+    pchResults[5*l_iGeoSectors-1] = 0;
+
+    // iterate over the patterns
+    for (int iPatternIdx = 0; iPatternIdx < 4; iPatternIdx++)
+    {
+        encoding_pattern_t ePattern = aePatterns[iPatternIdx];
+        // create an encoder, calculate pulse intervals for the given data pattern, and record it to disk
+        {
+            EncoderMFM encoder(l_pusDeltaBuffers, l_eGeoFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
+            uint32_t uiDeltaMax = encoder.EncodeTrack(ePattern, l_iDriveTrack, l_iDriveSide);
+            record_track_data(uiDeltaMax);
+        }
+        // read back the track and decode the data
+        track_metadata_t sMeta;
+        portENABLE_INTERRUPTS();
+        capture_track_data();
+        portDISABLE_INTERRUPTS();
+        calculate_track_metadata(sMeta);
+        // set the results
+        for (int iSector = 1; iSector <= l_iGeoSectors; iSector++)
+        {
+            // find this sector in the metadata
+            int iSectorIdx;
+            for (iSectorIdx = 0; iSectorIdx < sMeta.ucSectorsFound; iSectorIdx++)
+            {
+                if (sMeta.ucSectorNum[iSectorIdx] == iSector)
+                    break;
+            }
+            // print sector status characters
+            char *pchTestResult = pchResults + (iSector - 1) * 5 + iPatternIdx;
+            if (iSectorIdx == sMeta.ucSectorsFound)
+            {
+                *pchTestResult = '-';
+            }
+            else
+            {
+                bool bIdMatch = sMeta.ucSectorSide[iSectorIdx] == l_iDriveSide && sMeta.ucSectorCylinder[iSectorIdx] == l_iDriveTrack;
+                bool bIdCRCGood = sMeta.ucSectorGoodID[iSectorIdx];
+                bool bDataCRCGood = sMeta.ucSectorGoodData[iSectorIdx];
+                if (bDataCRCGood == false)
+                    *pchTestResult = 'X';
+                else if (bIdCRCGood == false || bIdMatch == false)
+                    *pchTestResult = 'x';
+                else
+                    *pchTestResult = 'O';
+            }
+        }
+    }
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
