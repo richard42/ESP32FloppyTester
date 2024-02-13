@@ -103,9 +103,9 @@ void disk_readwrite_test(void);
 // command helpers
 uint32_t format_track_metadata(int iSide, int iTrack, track_metadata_t& rsMeta, char *pchText);
 void calculate_track_metadata(track_metadata_t& rsMeta);
+void test_track_patterns(char *pchResults);
 void capture_track_data(void);
 float record_track_data(uint32_t uiDeltaMax);
-void test_track_patterns(char *pchResults);
 float calculate_interval_spread(void);
 
 // generic helpers
@@ -1695,62 +1695,6 @@ void disk_readwrite_test(void)
     }
 }
 
-void test_track_patterns(char *pchResults)
-{
-    encoding_pattern_t aePatterns[4] = { ENC_ZEROS, ENC_SIXES, ENC_EIGHTS, ENC_RANDOM };
-
-    // initialize the output result string
-    memset(pchResults, ' ', 5 * l_iGeoSectors - 1);
-    pchResults[5*l_iGeoSectors-1] = 0;
-
-    // iterate over the patterns
-    for (int iPatternIdx = 0; iPatternIdx < 4; iPatternIdx++)
-    {
-        encoding_pattern_t ePattern = aePatterns[iPatternIdx];
-        // create an encoder, calculate pulse intervals for the given data pattern, and record it to disk
-        {
-            EncoderMFM encoder(l_pusDeltaBuffers, l_eGeoFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
-            uint32_t uiDeltaMax = encoder.EncodeTrack(ePattern, l_iDriveTrack, l_iDriveSide);
-            record_track_data(uiDeltaMax);
-        }
-        // read back the track and decode the data
-        track_metadata_t sMeta;
-        portENABLE_INTERRUPTS();
-        capture_track_data();
-        portDISABLE_INTERRUPTS();
-        calculate_track_metadata(sMeta);
-        // set the results
-        for (int iSector = 1; iSector <= l_iGeoSectors; iSector++)
-        {
-            // find this sector in the metadata
-            int iSectorIdx;
-            for (iSectorIdx = 0; iSectorIdx < sMeta.ucSectorsFound; iSectorIdx++)
-            {
-                if (sMeta.ucSectorNum[iSectorIdx] == iSector)
-                    break;
-            }
-            // print sector status characters
-            char *pchTestResult = pchResults + (iSector - 1) * 5 + iPatternIdx;
-            if (iSectorIdx == sMeta.ucSectorsFound)
-            {
-                *pchTestResult = '-';
-            }
-            else
-            {
-                bool bIdMatch = sMeta.ucSectorSide[iSectorIdx] == l_iDriveSide && sMeta.ucSectorCylinder[iSectorIdx] == l_iDriveTrack;
-                bool bIdCRCGood = sMeta.ucSectorGoodID[iSectorIdx];
-                bool bDataCRCGood = sMeta.ucSectorGoodData[iSectorIdx];
-                if (bDataCRCGood == false)
-                    *pchTestResult = 'X';
-                else if (bIdCRCGood == false || bIdMatch == false)
-                    *pchTestResult = 'x';
-                else
-                    *pchTestResult = 'O';
-            }
-        }
-    }
-}
-
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Command Helper Functions
 
@@ -1859,6 +1803,62 @@ void calculate_track_metadata(track_metadata_t& rsMeta)
         rsMeta.eModulation = MOD_GCR;
     }
 
+}
+
+void test_track_patterns(char *pchResults)
+{
+    encoding_pattern_t aePatterns[4] = { ENC_ZEROS, ENC_SIXES, ENC_EIGHTS, ENC_RANDOM };
+
+    // initialize the output result string
+    memset(pchResults, ' ', 5 * l_iGeoSectors - 1);
+    pchResults[5*l_iGeoSectors-1] = 0;
+
+    // iterate over the patterns
+    for (int iPatternIdx = 0; iPatternIdx < 4; iPatternIdx++)
+    {
+        encoding_pattern_t ePattern = aePatterns[iPatternIdx];
+        // create an encoder, calculate pulse intervals for the given data pattern, and record it to disk
+        {
+            EncoderMFM encoder(l_pusDeltaBuffers, l_eGeoFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
+            uint32_t uiDeltaMax = encoder.EncodeTrack(ePattern, l_iDriveTrack, l_iDriveSide);
+            record_track_data(uiDeltaMax);
+        }
+        // read back the track and decode the data
+        track_metadata_t sMeta;
+        portENABLE_INTERRUPTS();
+        capture_track_data();
+        portDISABLE_INTERRUPTS();
+        calculate_track_metadata(sMeta);
+        // set the results
+        for (int iSector = 1; iSector <= l_iGeoSectors; iSector++)
+        {
+            // find this sector in the metadata
+            int iSectorIdx;
+            for (iSectorIdx = 0; iSectorIdx < sMeta.ucSectorsFound; iSectorIdx++)
+            {
+                if (sMeta.ucSectorNum[iSectorIdx] == iSector)
+                    break;
+            }
+            // print sector status characters
+            char *pchTestResult = pchResults + (iSector - 1) * 5 + iPatternIdx;
+            if (iSectorIdx == sMeta.ucSectorsFound)
+            {
+                *pchTestResult = '-';
+            }
+            else
+            {
+                bool bIdMatch = sMeta.ucSectorSide[iSectorIdx] == l_iDriveSide && sMeta.ucSectorCylinder[iSectorIdx] == l_iDriveTrack;
+                bool bIdCRCGood = sMeta.ucSectorGoodID[iSectorIdx];
+                bool bDataCRCGood = sMeta.ucSectorGoodData[iSectorIdx];
+                if (bDataCRCGood == false)
+                    *pchTestResult = 'X';
+                else if (bIdCRCGood == false || bIdMatch == false)
+                    *pchTestResult = 'x';
+                else
+                    *pchTestResult = 'O';
+            }
+        }
+    }
 }
 
 void capture_track_data(void)
