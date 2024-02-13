@@ -1,0 +1,32 @@
+
+TEAC FD-05HF-8830 floppy drive specification:
+ - Drive type:          DD/HD 3.5"
+ - Input signals:       Low < 0.8v, High > 2.0v, Low sinks 0.6mA, High sinks 2uA. Internal 20k pullup.
+ - Output signals:      Low < 0.3v, High > 3.7v, Low sinks up to 8mA, High sources up to 4mA
+ - Rotation speed:      300 rpm
+ - Start time:          480 ms
+ - Step size:           2 steps per track
+ - Track step time:     3 ms
+ - Step settling time:  15 ms
+ - Step input signal:   0.8us min pulse width
+                        min interval 3ms for same direction, 4ms for changed direction
+ - Write gate:          Don't enable until 18ms after last step, or 100us after SIDE1 change
+                        Wait for 650us (690us DD) after de-asserting until:
+                        - stopping motor
+                        - pulsing step input
+                        - de-asserting drive select
+                        - changing SIDE1
+ - Write data:          Pulse width should be between 0.2us and 1.1us
+                        - Max 8us delay between data pulses and assert/de-assert WGATE
+ - Read data:           Pulse width 0.15-0.8us, interval (DD) is 4us, 6us, or 8us
+ - SIDE1 select:        Read Data is valid 100us after this changes
+ - Track0:              Becomes valid 2.8ms after step
+ - Index signal:        Is output 16-18ms after step pulse
+                        - Pulse width is 1.5 to 5ms
+ - 
+
+TEAC FB-502 floppy drive specifications:
+ - Drive type:          DD 5.25"
+ - Input signals:       Low < 0.4v, High > 2.5v, 
+ - Output signals:      Low < 0.4v, High > 2.5v, Low sinks up to 48mA
+ 

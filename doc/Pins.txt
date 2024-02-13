@@ -1,0 +1,20 @@
+FDD 34-pin      Signal      Direction   ESP32 pin   Purpose
+-----------------------------------------------------------------------------
+1-33 odd        Ground      <-->        GND
+2               DENSEL      <---        IO32        Density selection
+6               DS3         <---        IO33
+8               INDEX       --->        IO4         Index hole detected (active low)
+10              MOT1        <---        IO25        Run drive 1 motor
+12              DS2         <---        IO23
+14              DS1         <---        IO22
+16              MOT2        <---        IO21
+18              DIR/SIDE1   <---        IO26        Low: step to higher (inner) cylinders
+20              STEP        <---        IO27        Move one cylinder step
+22              WDATA       <---        IO19          Write data pulse, on falling edge
+24              WGATE       <---        IO18        Low: write enable
+26              TRK00       --->        IO16        Track 0 detected
+28              WPT         --->        IO34        Inserted disk is write protected
+30              RDATA       --->        IO35        Read data pulses, on falling edge
+32              SIDE1       <---        IO17        High: select upper head 0. Low: select lower head 1
+34              DISKCHG     --->        IO13        Low: no disk in drive. Must be cleared by select or seek
+

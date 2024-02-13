@@ -1,0 +1,22 @@
+ESP32 Floppy Tester
+Bill Of Materials
+Digi-Key part numbers
+
+Qty  P/N                     Name                                    Schematic Reference
+----------------------------------------------------------------------------------------
+  1  296-1699-1-ND           SN74LVC14ADR                            (U1)
+  2  296-34100-5-ND          SN74S04D                                (U2, U3)
+  1  4608X-101-103LF         10k resistor Array 7                    (RN1)
+  3  1276-1003-1-ND          0.1uF bypass capacitor SMD 0805         (C1, C2, C3)
+  1  HDR100IMP40F-G-V-TH-ND  2x19-pin female headers (cut)           (J2, J3)
+  1  1528-5357-ND            34-pin IDC box header                   (J1)
+
+* ESP32 development board is also required
+ - it must have a pinout like the DevKit C board illustrated here:
+   https://docs.espressif.com/projects/esp-idf/en/latest/esp32/hw-reference/esp32/get-started-devkitc.html
+
+* PCB Component placement:
+ - Top of PCB lines up with ESP32, bottom of PCB lines up with USB connector
+ - J2 and J3 (19-pin female 100mil pin header sockets) insert into front of PCB
+ - J1 (34-pin IDC male connector) to floppy drive cable inserts into back of PCB, with box slot to the left
+
