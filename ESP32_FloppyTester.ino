@@ -84,6 +84,7 @@ void track_read(void);
 void track_erase(void);
 void track_write_pattern(encoding_pattern_t ePattern);
 void disk_read(void);
+void disk_erase(void);
 
 // command helpers
 uint32_t format_track_metadata(int iSide, int iTrack, track_metadata_t& rsMeta, char *pchText);
@@ -438,6 +439,10 @@ void loop()
     {
         disk_read();
     }
+    else if (strInput == "disk erase")
+    {
+        disk_erase();
+    }
     else
     {
         Serial.write("Unknown command.\r\n");
@@ -474,7 +479,8 @@ void display_help(void)
     Serial.write("                SIXES     - all sector data is alternating bits (MFM 6us intervals).\r\n");
     Serial.write("                EIGHTS    - all sector data is alternating bits (MFM 8us intervals).\r\n");
     Serial.write("                RANDOM    - all sector data is random.\r\n");
-    Serial.write("    DISK READ      - read all tracks on disk and display track/sector status\r\n");
+    Serial.write("    DISK READ      - read all tracks on disk and display track/sector status.\r\n");
+    Serial.write("    DISK ERASE     - erase all tracks on the disk (destroys data on disk).\r\n");
     Serial.write("\r\n");
 }
 
@@ -1066,6 +1072,9 @@ void track_erase(void)
         delay(TIME_MOTOR_SETTLE);
     }
 
+    // disable interrupts
+    portDISABLE_INTERRUPTS();
+
     // wait until index pulse first arrives
     do {} while (gpio_get_level(FDC_INDEX) == 1);
     do {} while (gpio_get_level(FDC_INDEX) == 0);
@@ -1081,6 +1090,9 @@ void track_erase(void)
 
     // disable the Write Gate
     gpio_set_level(FDC_WGATE, 0);
+
+    // re-enable interrupts
+    portENABLE_INTERRUPTS();
 
     // call helper function to record data from one track
     capture_track_data();
@@ -1315,6 +1327,135 @@ void disk_read(void)
         gpio_set_level((gpio_num_t) l_iPinMotor, 0);
         l_bDriveMotorOn = false;
     }
+}
+
+void disk_erase(void)
+{
+    // make sure pins are defined
+    if (l_iPinSelect == -1 || l_iPinMotor == -1)
+    {
+        Serial.write("Error: select/motor pin(s) not set. Use DETECT PINS\r\n");
+        return;
+    }
+
+    // select the drive, if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 1);
+        delay_micros(1000);
+    }
+
+    // check the write protect status
+    if (gpio_get_level(FDC_WPT))
+    {
+        Serial.write("Error: write-protect is enabled on disk.\r\n");
+        if (!l_bDriveMotorOn)
+        {
+            gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        }
+        return;
+    }
+
+    // turn on the motor if necessary
+    const bool bWasDriveMotorOn = l_bDriveMotorOn;
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinMotor, 1);
+        // wait 0.5 seconds for speed to settle
+        delay(TIME_MOTOR_SETTLE);
+        l_bDriveMotorOn = true;                         // set to true so future seek/read operations don't turn off the motor
+    }
+
+    // start at track 0
+    if (!seek_home(true))
+    {
+        if (!bWasDriveMotorOn)
+        {
+            gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+            gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+            l_bDriveMotorOn = false;
+        }
+        return;
+    }
+
+    // inform user of which sides are being read
+    if (l_iGeoSides == 1)
+    {
+        Serial.printf("Erasing disk side %i.\r\n", l_iDriveSide);
+    }
+    else // l_iGeoSides == 2
+    {
+        Serial.printf("Erasing disk sides 0 and 1.\r\n");
+    }
+
+    // disable interrupts
+    portDISABLE_INTERRUPTS();
+
+    // iterate over all tracks
+    uint32_t uiSectorErrors = 0;
+    for (int iTrack = 0; iTrack < l_iGeoTracks; iTrack++)
+    {
+        // seek to track
+        if (iTrack != 0)
+            seek_track(iTrack);
+
+        // switch sides if necessary
+        if (l_iGeoSides == 2)
+        {
+            l_iDriveSide = 0;
+            gpio_set_level(FDC_SIDE1, 0);
+        }
+
+        // wait 20ms for index pulse to be valid
+        delay_micros(20000);
+
+        // wait until index pulse first arrives
+        do {} while (gpio_get_level(FDC_INDEX) == 1);
+        do {} while (gpio_get_level(FDC_INDEX) == 0);
+      
+        // set the Write Gate line to erase the track
+        gpio_set_level(FDC_WGATE, 1);
+      
+        // wait until the next index pulse arrives
+        do {} while (gpio_get_level(FDC_INDEX) == 1);
+        do {} while (gpio_get_level(FDC_INDEX) == 0);
+      
+        // disable the Write Gate
+        gpio_set_level(FDC_WGATE, 0);
+
+        // erase the other side if necessary
+        if (l_iGeoSides == 2)
+        {
+            // switch to side 1
+            l_iDriveSide = 1;
+            gpio_set_level(FDC_SIDE1, 1);
+            // wait 100us
+            delay_micros(100);
+            // wait until index pulse first arrives
+            do {} while (gpio_get_level(FDC_INDEX) == 1);
+            do {} while (gpio_get_level(FDC_INDEX) == 0);
+            // set the Write Gate line to erase the track
+            gpio_set_level(FDC_WGATE, 1);
+            // wait until the next index pulse arrives
+            do {} while (gpio_get_level(FDC_INDEX) == 1);
+            do {} while (gpio_get_level(FDC_INDEX) == 0);
+            // disable the Write Gate
+            gpio_set_level(FDC_WGATE, 0);
+        }
+    }
+
+    // re-enable interrupts
+    portENABLE_INTERRUPTS();
+
+    // turn off the motor if necessary
+    if (!bWasDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+        l_bDriveMotorOn = false;
+    }
+
+    Serial.write("Erase operation completed.\r\n");
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
