@@ -85,11 +85,13 @@ void track_erase(void);
 void track_write_pattern(encoding_pattern_t ePattern);
 void disk_read(void);
 void disk_erase(void);
+void disk_write_pattern(encoding_pattern_t ePattern);
 
 // command helpers
 uint32_t format_track_metadata(int iSide, int iTrack, track_metadata_t& rsMeta, char *pchText);
 void calculate_track_metadata(track_metadata_t& rsMeta);
 void capture_track_data(void);
+float record_track_data(uint32_t uiDeltaMax);
 void write_track_data(void);
 float calculate_interval_spread(void);
 
@@ -415,7 +417,7 @@ void loop()
     {
         track_erase();
     }
-    else if (strInput.find("track write") == 0)
+    else if (strInput.find("track write ") == 0)
     {
         encoding_pattern_t ePattern;
         if (strInput == "track write zeros")
@@ -430,7 +432,7 @@ void loop()
             ePattern = ENC_RANDOM;
         else
         {
-            Serial.printf("Error: invalid TRACK WRITE pattern: '%s'.\r\n", strInput.c_str() + 11);
+            Serial.printf("Error: invalid TRACK WRITE pattern: '%s'.\r\n", strInput.c_str() + 12);
             return;
         }
         track_write_pattern(ePattern);
@@ -442,6 +444,26 @@ void loop()
     else if (strInput == "disk erase")
     {
         disk_erase();
+    }
+    else if (strInput.find("disk write ") == 0)
+    {
+        encoding_pattern_t ePattern;
+        if (strInput == "disk write zeros")
+            ePattern = ENC_ZEROS;
+        else if (strInput == "disk write ones")
+            ePattern = ENC_ONES;
+        else if (strInput == "disk write sixes")
+            ePattern = ENC_SIXES;
+        else if (strInput == "disk write eights")
+            ePattern = ENC_EIGHTS;
+        else if (strInput == "disk write random")
+            ePattern = ENC_RANDOM;
+        else
+        {
+            Serial.printf("Error: invalid DISK WRITE pattern: '%s'.\r\n", strInput.c_str() + 11);
+            return;
+        }
+        disk_write_pattern(ePattern);
     }
     else
     {
@@ -473,7 +495,7 @@ void display_help(void)
     Serial.write("             AMIGA                         - set Amiga format, 2 sides, 80 tracks, 11 sectors.\r\n");
     Serial.write("    TRACK READ     - read current track and print decoded data summary (requires formatted disk).\r\n");
     Serial.write("    TRACK ERASE    - erase current track and validate erasure (destroys data on disk).\r\n");
-    Serial.write("    TRACK WRITE ...- write track data using current format (destroys data on disk).\r\n");
+    Serial.write("    TRACK WRITE ...- write track data with current format and given pattern (destroys data on disk).\r\n");
     Serial.write("                ZEROS     - all sector data is binary 0 (MFM 4us intervals).\r\n");
     Serial.write("                ONES      - all sector data is binary 1 (MFM 4us intervals).\r\n");
     Serial.write("                SIXES     - all sector data is alternating bits (MFM 6us intervals).\r\n");
@@ -481,6 +503,7 @@ void display_help(void)
     Serial.write("                RANDOM    - all sector data is random.\r\n");
     Serial.write("    DISK READ      - read all tracks on disk and display track/sector status.\r\n");
     Serial.write("    DISK ERASE     - erase all tracks on the disk (destroys data on disk).\r\n");
+    Serial.write("    DISK WRITE ... - write all tracks on disk with current format and given pattern (destroys data on disk).\r\n");
     Serial.write("\r\n");
 }
 
@@ -1176,68 +1199,8 @@ void track_write_pattern(encoding_pattern_t ePattern)
         delay(TIME_MOTOR_SETTLE);
     }
 
-    // disable all interrupts during write
     portDISABLE_INTERRUPTS();
-
-    // wait until index pulse first arrives
-    do {} while (gpio_get_level(FDC_INDEX) == 1);
-    do {} while (gpio_get_level(FDC_INDEX) == 0);
-
-    // set the Write Gate line to erase the track
-    gpio_set_level(FDC_WGATE, 1);
-
-    // write the first pulse 2us after the write gate goes active
-    delay_micros(2);
-    gpio_set_level(FDC_WDATA, 1);
-    delay_micros(1);
-    gpio_set_level(FDC_WDATA, 0);
-
-    // get the starting cycle counter
-    uint32_t uiCurCycles;
-    asm volatile("  rsr %0, ccount                \n"
-                 : "=a"(uiCurCycles) );
-    const uint32_t uiStartingCycles = uiCurCycles;
-
-    // write out all the pulses
-    l_uiDeltaPos = 0;
-    l_uiDeltaCnt = 0;
-    while (l_uiDeltaPos < uiDeltaMax)
-    {
-        // get next delta time
-        uint32_t uiDelta = DELTA_ITEM(l_uiDeltaPos);
-        l_uiDeltaPos++;
-        if (uiDelta & 0x8000)
-        {
-            uiDelta = ((uiDelta & 0x7fff) << 16) + DELTA_ITEM(l_uiDeltaPos);
-            l_uiDeltaPos++;
-        }
-        l_uiDeltaCnt++;
-        // convert to cycles and wait until that time
-        const uint32_t uiDeltaCycles = uiDelta * 3;
-        uint32_t uiTemp;
-        asm volatile("Loop1:                          \n"
-                     "  rsr %0, ccount                \n"
-                     "  sub %0, %0, %1                \n"
-                     "  blt %0, %2, Loop1             \n"
-                     : "=&a"(uiTemp)
-                     : "a"(uiCurCycles), "a"(uiDeltaCycles) );
-        // write pulse
-        gpio_set_level(FDC_WDATA, 1);
-        delay_micros(1);
-        gpio_set_level(FDC_WDATA, 0);
-        // loop back to wait for the next pulse time
-        uiCurCycles += uiDeltaCycles;
-    }
-
-    // disable the Write Gate
-    gpio_set_level(FDC_WGATE, 0);
-
-    // get the ending cycle counter
-    uint32_t uiEndingCycles;
-    asm volatile("  rsr %0, ccount                \n"
-                 : "=a"(uiEndingCycles) );
-
-    // re-enable interrupt
+    float fWriteTimeMS = record_track_data(uiDeltaMax);
     portENABLE_INTERRUPTS();
 
     // turn off the motor if necessary
@@ -1248,7 +1211,7 @@ void track_write_pattern(encoding_pattern_t ePattern)
     }
 
     // print a little info
-    Serial.printf("Wrote %i flux transitions in %.3f milliseconds.\r\n", l_uiDeltaCnt, (uiEndingCycles - uiStartingCycles) / 240000.0f);
+    Serial.printf("Wrote %i flux transitions in %.3f milliseconds.\r\n", l_uiDeltaCnt, fWriteTimeMS);
 }
 
 void disk_read(void)
@@ -1278,11 +1241,11 @@ void disk_read(void)
 
     // iterate over all tracks
     uint32_t uiSectorErrors = 0;
-    for (int iTrack = 0; iTrack < l_iGeoTracks; iTrack++)
+    for (int l_iDriveTrack = 0; l_iDriveTrack < l_iGeoTracks; l_iDriveTrack++)
     {
         // seek to track
-        if (iTrack != 0)
-            seek_track(iTrack);
+        if (l_iDriveTrack != 0)
+            seek_track(l_iDriveTrack);
 
         // wait 20ms for index pulse to be valid
         delay_micros(20000);
@@ -1294,8 +1257,8 @@ void disk_read(void)
             track_metadata_t sMeta;
             capture_track_data();
             calculate_track_metadata(sMeta);
-            uiSectorErrors += format_track_metadata(l_iDriveSide, iTrack, sMeta, chSectorText);
-            Serial.printf("%2i %s\r\n", iTrack, chSectorText);
+            uiSectorErrors += format_track_metadata(l_iDriveSide, l_iDriveTrack, sMeta, chSectorText);
+            Serial.printf("%2i %s\r\n", l_iDriveTrack, chSectorText);
         }
         else // (l_iGeoSides == 2)
         {
@@ -1314,9 +1277,9 @@ void disk_read(void)
             calculate_track_metadata(sMeta1);
             char chSide0[96];
             char chSide1[96];
-            uiSectorErrors += format_track_metadata(0, iTrack, sMeta0, chSide0);
-            uiSectorErrors += format_track_metadata(1, iTrack, sMeta1, chSide1);
-            Serial.printf("%2i %s |  %s\r\n", iTrack, chSide0, chSide1);
+            uiSectorErrors += format_track_metadata(0, l_iDriveTrack, sMeta0, chSide0);
+            uiSectorErrors += format_track_metadata(1, l_iDriveTrack, sMeta1, chSide1);
+            Serial.printf("%2i %s |  %s\r\n", l_iDriveTrack, chSide0, chSide1);
         }
     }
 
@@ -1393,11 +1356,11 @@ void disk_erase(void)
 
     // iterate over all tracks
     uint32_t uiSectorErrors = 0;
-    for (int iTrack = 0; iTrack < l_iGeoTracks; iTrack++)
+    for (int l_iDriveTrack = 0; l_iDriveTrack < l_iGeoTracks; l_iDriveTrack++)
     {
         // seek to track
-        if (iTrack != 0)
-            seek_track(iTrack);
+        if (l_iDriveTrack != 0)
+            seek_track(l_iDriveTrack);
 
         // switch sides if necessary
         if (l_iGeoSides == 2)
@@ -1456,6 +1419,129 @@ void disk_erase(void)
     }
 
     Serial.write("Erase operation completed.\r\n");
+}
+
+void disk_write_pattern(encoding_pattern_t ePattern)
+{
+    // make sure pins are defined
+    if (l_iPinSelect == -1 || l_iPinMotor == -1)
+    {
+        Serial.write("Error: select/motor pin(s) not set. Use DETECT PINS\r\n");
+        return;
+    }
+
+    // validate format type
+    if (l_eGeoFormat != FMT_IBM)
+    {
+        Serial.write("Error: only IBM format is current supported for disk writing.\r\n");
+        return;
+    }
+    
+    // select the drive, if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 1);
+        delay_micros(1000);
+    }
+
+    // check the write protect status
+    if (gpio_get_level(FDC_WPT))
+    {
+        Serial.write("Error: write-protect is enabled on disk.\r\n");
+        if (!l_bDriveMotorOn)
+        {
+            gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        }
+        return;
+    }
+
+    // turn on the motor if necessary
+    const bool bWasDriveMotorOn = l_bDriveMotorOn;
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinMotor, 1);
+        // wait 0.5 seconds for speed to settle
+        delay(TIME_MOTOR_SETTLE);
+        l_bDriveMotorOn = true;                         // set to true so future seek/read operations don't turn off the motor
+    }
+
+    // start at track 0
+    if (!seek_home(true))
+    {
+        if (!bWasDriveMotorOn)
+        {
+            gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+            gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+            l_bDriveMotorOn = false;
+        }
+        return;
+    }
+
+    // inform user of which sides are being read
+    if (l_iGeoSides == 1)
+    {
+        Serial.printf("Writing disk side %i.\r\n", l_iDriveSide);
+    }
+    else // l_iGeoSides == 2
+    {
+        Serial.printf("Writing disk sides 0 and 1.\r\n");
+    }
+
+    // disable interrupts
+    portDISABLE_INTERRUPTS();
+
+    // iterate over all tracks
+    uint32_t uiSectorErrors = 0;
+    for (int l_iDriveTrack = 0; l_iDriveTrack < l_iGeoTracks; l_iDriveTrack++)
+    {
+        // seek to track
+        if (l_iDriveTrack != 0)
+            seek_track(l_iDriveTrack);
+
+        // switch sides if necessary
+        if (l_iGeoSides == 2)
+        {
+            l_iDriveSide = 0;
+            gpio_set_level(FDC_SIDE1, 0);
+        }
+
+        // wait 20ms for index pulse to be valid
+        delay_micros(20000);
+
+        // create an encoder, and write out pulse intervals for the given data pattern
+        {
+            EncoderMFM encoder(l_pusDeltaBuffers, l_eGeoFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
+            uint32_t uiDeltaMax = encoder.EncodeTrack(ePattern, l_iDriveTrack, l_iDriveSide);
+            record_track_data(uiDeltaMax);
+        }
+
+        // write the other side if necessary
+        if (l_iGeoSides == 2)
+        {
+            // switch to side 1
+            l_iDriveSide = 1;
+            gpio_set_level(FDC_SIDE1, 1);
+            // wait 100us
+            delay_micros(100);
+            // create an encoder, and write out pulse intervals for the given data pattern
+            EncoderMFM encoder(l_pusDeltaBuffers, l_eGeoFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
+            uint32_t uiDeltaMax = encoder.EncodeTrack(ePattern, l_iDriveTrack, l_iDriveSide);
+            record_track_data(uiDeltaMax);
+        }
+    }
+
+    // re-enable interrupts
+    portENABLE_INTERRUPTS();
+
+    // turn off the motor if necessary
+    if (!bWasDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+        l_bDriveMotorOn = false;
+    }
+
+    Serial.write("Write operation completed.\r\n");
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1606,6 +1692,70 @@ void capture_track_data(void)
     mcpwm_capture_disable(MCPWM_UNIT_0, MCPWM_SELECT_CAP1);
 
     ESP_INTR_ENABLE(XT_TIMER_INTNUM);
+}
+
+float record_track_data(uint32_t uiDeltaMax)
+{
+    // wait until index pulse first arrives
+    do {} while (gpio_get_level(FDC_INDEX) == 1);
+    do {} while (gpio_get_level(FDC_INDEX) == 0);
+
+    // set the Write Gate line
+    gpio_set_level(FDC_WGATE, 1);
+
+    // write the first pulse 2us after the write gate goes active
+    delay_micros(2);
+    gpio_set_level(FDC_WDATA, 1);
+    delay_micros(1);
+    gpio_set_level(FDC_WDATA, 0);
+
+    // get the starting cycle counter
+    uint32_t uiCurCycles;
+    asm volatile("  rsr %0, ccount                \n"
+                 : "=a"(uiCurCycles) );
+    const uint32_t uiStartingCycles = uiCurCycles;
+
+    // write out all the pulses
+    l_uiDeltaPos = 0;
+    l_uiDeltaCnt = 0;
+    while (l_uiDeltaPos < uiDeltaMax)
+    {
+        // get next delta time
+        uint32_t uiDelta = DELTA_ITEM(l_uiDeltaPos);
+        l_uiDeltaPos++;
+        if (uiDelta & 0x8000)
+        {
+            uiDelta = ((uiDelta & 0x7fff) << 16) + DELTA_ITEM(l_uiDeltaPos);
+            l_uiDeltaPos++;
+        }
+        l_uiDeltaCnt++;
+        // convert to cycles and wait until that time
+        const uint32_t uiDeltaCycles = uiDelta * 3;
+        uint32_t uiTemp;
+        asm volatile("Loop1:                          \n"
+                     "  rsr %0, ccount                \n"
+                     "  sub %0, %0, %1                \n"
+                     "  blt %0, %2, Loop1             \n"
+                     : "=&a"(uiTemp)
+                     : "a"(uiCurCycles), "a"(uiDeltaCycles) );
+        // write pulse
+        gpio_set_level(FDC_WDATA, 1);
+        delay_micros(1);
+        gpio_set_level(FDC_WDATA, 0);
+        // loop back to wait for the next pulse time
+        uiCurCycles += uiDeltaCycles;
+    }
+
+    // disable the Write Gate
+    gpio_set_level(FDC_WGATE, 0);
+
+    // get the ending cycle counter
+    uint32_t uiEndingCycles;
+    asm volatile("  rsr %0, ccount                \n"
+                 : "=a"(uiEndingCycles) );
+
+    // return with the number of milliseconds used during writing
+    return (uiEndingCycles - uiStartingCycles) / 240000.0f;
 }
 
 float calculate_interval_spread(void)
