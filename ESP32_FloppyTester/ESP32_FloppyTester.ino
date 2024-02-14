@@ -1302,7 +1302,7 @@ void disk_read(void)
             Serial.printf("%2i %s |  %s\r\n", l_iDriveTrack, chSide0, chSide1);
         }
     }
-    l_iDriveTrack--;  // decrement this so it reflects the actual current track number
+    //l_iDriveTrack--;  // decrement this so it reflects the actual current track number
 
     // turn off the motor if necessary
     if (!bWasDriveMotorOn)
@@ -1427,7 +1427,7 @@ void disk_erase(void)
             gpio_set_level(FDC_WGATE, 0);
         }
     }
-    l_iDriveTrack--;  // decrement this so it reflects the actual current track number
+    //l_iDriveTrack--;  // decrement this so it reflects the actual current track number
 
     // re-enable interrupts
     portENABLE_INTERRUPTS();
@@ -1551,7 +1551,7 @@ void disk_write_pattern(encoding_pattern_t ePattern)
             record_track_data(uiDeltaMax);
         }
     }
-    l_iDriveTrack--;  // decrement this so it reflects the actual current track number
+    //l_iDriveTrack--;  // decrement this so it reflects the actual current track number
 
     // re-enable interrupts
     portENABLE_INTERRUPTS();
@@ -1681,7 +1681,7 @@ void disk_readwrite_test(void)
             portDISABLE_INTERRUPTS();
         }
     }
-    l_iDriveTrack--;  // decrement this so it reflects the actual current track number
+    //l_iDriveTrack--;  // decrement this so it reflects the actual current track number
 
     // re-enable interrupts
     portENABLE_INTERRUPTS();
