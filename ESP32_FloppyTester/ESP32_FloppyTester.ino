@@ -334,7 +334,7 @@ void loop()
             {
                 Serial.printf("Error: invalid IBM geometry sides '%s' specified.\r\n", chSides);
             }
-            else if (iTracks != 40 && iTracks != 80)
+            else if (iTracks != 40 && iTracks != 80 && iTracks != 81 && iTracks != 82 && iTracks != 83)
             {
                 Serial.printf("Error: invalid IBM geometry tracks '%i' specified.\r\n", iTracks);
             }
@@ -510,8 +510,8 @@ void display_help(void)
     Serial.write("    SIDE <X>       - use side X (0 or 1) for single-sided commands.\r\n");
     Serial.write("    SIDE           - display current side number.\r\n");
     Serial.write("    GEOMETRY ...   - set/show current drive geometry. Examples:\r\n");
-    Serial.write("             IBM <SS/DS> <40/80> <9/10/11> - set IBM format, sides, track count, sector count.\r\n");
-    Serial.write("             AMIGA                         - set Amiga format, 2 sides, 80 tracks, 11 sectors.\r\n");
+    Serial.write("             IBM <SS/DS> <40/80/81/82/83> <9/10/11> - set IBM format, sides, track count, sector count.\r\n");
+    Serial.write("             AMIGA                                  - set Amiga format, 2 sides, 80 tracks, 11 sectors.\r\n");
     Serial.write("    TRACK READ     - read current track and print decoded data summary (requires formatted disk).\r\n");
     Serial.write("    TRACK ERASE    - erase current track and validate erasure (destroys data on disk).\r\n");
     Serial.write("    TRACK WRITE ...- write track data with current format and given pattern (destroys data on disk).\r\n");
