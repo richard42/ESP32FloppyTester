@@ -826,7 +826,14 @@ void EncoderMFM::calc_sector_data(encoding_pattern_t ePattern, uint32_t uiSector
                     pucSectorData[uiByteIdx] = 0x49;
                 break;
             case ENC_EIGHTS:
-                pucSectorData[uiByteIdx] = 0x55;
+                if (m_eGeoFormat == FMT_AMIGA)
+                {
+                    pucSectorData[uiByteIdx] = 0x33;
+                }
+                else
+                {
+                    pucSectorData[uiByteIdx] = 0x55;
+                }
                 break;
             case ENC_RANDOM:
                 pucSectorData[uiByteIdx] = (rand() & 0xff);
