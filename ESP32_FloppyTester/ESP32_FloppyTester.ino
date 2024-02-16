@@ -95,6 +95,7 @@ void seek_track(int iTargetTrack);
 void track_read(void);
 void track_erase(void);
 void track_write_pattern(encoding_pattern_t ePattern);
+void track_readwrite_test(void);
 void disk_read(void);
 void disk_erase(void);
 void disk_write_pattern(encoding_pattern_t ePattern);
@@ -461,6 +462,10 @@ void loop()
         }
         track_write_pattern(ePattern);
     }
+    else if (strInput == "track rwtest")
+    {
+        track_readwrite_test();
+    }
     else if (strInput == "disk read")
     {
         disk_read();
@@ -530,6 +535,7 @@ void display_help(void)
     Serial.write("                SIXES     - all sector data is alternating bits (MFM 6us intervals).\r\n");
     Serial.write("                EIGHTS    - all sector data is alternating bits (MFM 8us intervals).\r\n");
     Serial.write("                RANDOM    - all sector data is random.\r\n");
+    Serial.write("    TRACK RWTEST   - write and verify current track 4 different patterns (destroys data on disk).\r\n");
     Serial.write("    DISK READ      - read all tracks on disk and display track/sector status.\r\n");
     Serial.write("    DISK ERASE     - erase all tracks on the disk (destroys data on disk).\r\n");
     Serial.write("    DISK WRITE ... - write all tracks on disk with current format and given pattern (destroys data on disk).\r\n");
@@ -1235,6 +1241,62 @@ void track_write_pattern(encoding_pattern_t ePattern)
 
     // print a little info
     Serial.printf("Wrote %i flux transitions in %.3f milliseconds.\r\n", l_uiDeltaCnt, fWriteTimeMS);
+}
+
+void track_readwrite_test(void)
+{
+    // make sure pins are defined
+    if (l_iPinSelect == -1 || l_iPinMotor == -1)
+    {
+        Serial.write("Error: select/motor pin(s) not set. Use DETECT PINS\r\n");
+        return;
+    }
+
+    // select the drive, if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 1);
+        delay_micros(1000);
+    }
+
+    // check the write protect status
+    if (gpio_get_level(FDC_WPT))
+    {
+        Serial.write("Error: write-protect is enabled on disk.\r\n");
+        if (!l_bDriveMotorOn)
+        {
+            gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        }
+        return;
+    }
+
+    // turn on the motor if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinMotor, 1);
+        // wait 0.5 seconds for speed to settle
+        delay(TIME_MOTOR_SETTLE);
+    }
+
+    // disable interrupts
+    portDISABLE_INTERRUPTS();
+
+    // run the pattern read/write test
+    char chResults[64];
+    test_track_patterns(chResults);
+
+    // re-enable interrupts
+    portENABLE_INTERRUPTS();
+
+    // turn off the motor if necessary
+    if (!l_bDriveMotorOn)
+    {
+        gpio_set_level((gpio_num_t) l_iPinSelect, 0);
+        gpio_set_level((gpio_num_t) l_iPinMotor, 0);
+    }
+
+    // print the results
+    Serial.printf("%2i: %s\r\n", l_iDriveTrack, chResults);
 }
 
 void disk_read(void)

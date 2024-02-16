@@ -91,10 +91,11 @@ After all of the basic drive tests have passed, the user can move on to more adv
                 SIXES     - all sector data is alternating bits (MFM 6us intervals).
                 EIGHTS    - all sector data is alternating bits (MFM 8us intervals).
                 RANDOM    - all sector data is random.
+    TRACK RWTEST   - write and verify current track with 4 different patterns (destroys data on disk).\r\n");
     DISK READ      - read all tracks on disk and display track/sector status.
     DISK ERASE     - erase all tracks on the disk (destroys data on disk).
     DISK WRITE ... - write all tracks on disk with current format and given pattern (destroys data on disk).
-    DISK RWTEST    - write and verify all tracks on disks with 4 different patterns (destroys data on disk).
+    DISK RWTEST    - write and verify all tracks on disk with 4 different patterns (destroys data on disk).
 ```
 #### DETECT STATUS
 The `DETECT STATUS` command may be used to read the state of 3 input lines, which can indicate if the write protect switch/LED and the disk change circuitry (if supported by the drive) is working.
