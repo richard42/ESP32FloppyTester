@@ -843,7 +843,7 @@ void EncoderMFM::calc_amiga_sector(encoding_pattern_t ePattern, uint32_t uiDrive
     // ID Record
     ucBytes[0] = 0xff;
     ucBytes[1] = (uiDriveTrack * 2 + uiDriveSide);
-    ucBytes[2] = uiSectorNum;
+    ucBytes[2] = uiSectorNum - 1;
     ucBytes[3] = m_iGeoSectors + 1 - uiSectorNum;
     for (uint32_t ui = 4; ui < 20; ui++)
     {
