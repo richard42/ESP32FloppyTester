@@ -79,9 +79,10 @@ After all of the basic drive tests have passed, the user can move on to more adv
     SEEK           - display current track number.
     SIDE <X>       - use side X (0 or 1) for single-sided commands.
     SIDE           - display current side number.
-    GEOMETRY ...   - set/show current drive geometry. Examples:
-             IBM <SS/DS> <40/80> <9/10/11> - set IBM format, sides, track count, sector count.
-             AMIGA                         - set Amiga format, 2 sides, 80 tracks, 11 sectors.
+    GEOMETRY ...   - set/show current disk format and geometry. Examples:
+             IBM   <SS/DS>         - set IBM format, single/double sided, 80 track, 9 sectors.
+             ATARI <SS/DS> <X> <Y> - set Atari format, single/double sided, X tracks, Y sectors.
+             AMIGA                 - set Amiga format, 2 sides, 80 tracks, 11 sectors.
     TRACK READ     - read current track and print decoded data summary (requires formatted disk).
     TRACK ERASE    - erase current track and validate erasure (destroys data on disk).
     TRACK WRITE ...- write track data with current format and given pattern (destroys data on disk).
@@ -201,8 +202,6 @@ There are many.
 * This software and hardware comes with no warranty of any kind.
 * Read the [Hardware Warning](#hardware-warning) again.
 * This software has been written very quickly and is far from feature-complete.
-* The Amiga disk format is currently only supported for reading, not for writing.
-* The IBM disk format only supports high sector counts (10 and 11) for reading. Only the 9-sector format is supported for writing.
-* I have only tested this with one PC 3.5" drive and one Amiga 3.5" drive. In the future other types of drives will be supported as well.
+* I have only tested this with a few different 3.5" drives. In the future 5.25" (40 track) drives will be supported as well.
 * Only Double Density disks are currently supported. The ESP32 is fast enough to handle HD disks as well, but it is likely that a significant amount of code refactoring would be necessary to support HD drives due to the limited amout of RAM in the ESP32.
 

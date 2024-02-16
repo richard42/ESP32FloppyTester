@@ -135,8 +135,8 @@ void DecoderMFM::DecodeTrack(geo_format_t eFormat, bool bDebugPrint, track_metad
             continue;
         }
 
-        // normal cases for IBM
-        if (eFormat == FMT_IBM && uiNumSpecMatch == uiMaxSpecMatch)
+        // normal cases for IBM/Atari
+        if ((eFormat == FMT_IBM || eFormat == FMT_ATARI) && uiNumSpecMatch == uiMaxSpecMatch)
         {
             // found a marker
             if (pucSpecMatch == pucSpecialC2)
@@ -157,7 +157,7 @@ void DecoderMFM::DecodeTrack(geo_format_t eFormat, bool bDebugPrint, track_metad
     }
 
     if (bDebugPrint)
-        Serial.printf("%i %s sectors read.\r\n", rsMeta.ucSectorsFound, (eFormat == FMT_IBM ? "IBM" : "Amiga"));
+        Serial.printf("%i %s sectors read.\r\n", rsMeta.ucSectorsFound, (eFormat == FMT_IBM ? "IBM" : (eFormat == FMT_ATARI ? "Atari" : "Amiga")));
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -266,7 +266,7 @@ uint32_t DecoderMFM::ReadSectorBytesIBM(uint32_t uiStartIdx, bool bDebugPrint, t
             {
                 // Sector ID record
                 if (bDebugPrint)
-                    Serial.printf("IBM Sector ID: Cylinder %i, Side %i, Sector %i, CRC=%04x (%s)\r\n", ucBytes[1], ucBytes[2], ucBytes[3],
+                    Serial.printf("Sector ID: Cylinder %i, Side %i, Sector %i, CRC=%04x (%s)\r\n", ucBytes[1], ucBytes[2], ucBytes[3],
                                   (ucBytes[5] << 8) + ucBytes[6], (m_usCurrentCRC == 0 ? "GOOD" : "BAD"));
                 m_uiSectorDataLength = 1 << (7 + ucBytes[4]);
                 // set metadata
@@ -284,7 +284,7 @@ uint32_t DecoderMFM::ReadSectorBytesIBM(uint32_t uiStartIdx, bool bDebugPrint, t
                 // Sector data
                 const uint16_t usDataCRC = (ucBytes[m_uiSectorDataLength+1] << 8) + ucBytes[m_uiSectorDataLength+2];
                 if (bDebugPrint)
-                    Serial.printf("IBM Sector data: %i bytes with CRC=%04x (%s)\r\n", m_uiSectorDataLength,
+                    Serial.printf("Sector data: %i bytes with CRC=%04x (%s)\r\n", m_uiSectorDataLength,
                                   usDataCRC, (m_usCurrentCRC == 0 ? "GOOD" : "BAD"));
                 m_uiSectorDataLength = 0;
                 // set metadata
@@ -486,14 +486,11 @@ uint32_t EncoderMFM::EncodeTrack(encoding_pattern_t ePattern, int iDriveTrack, i
 {
     if (m_eGeoFormat == FMT_IBM)
     {
-        if (m_iGeoSectors == 9)
-        {
-            return EncodeTrack720kIBM(ePattern, iDriveTrack, iDriveSide);
-        }
-        else // (m_iGeoSectors == 10 || m_iGeoSectors == 11)
-        {
-            return EncodeTrack800kAtari(ePattern, iDriveTrack, iDriveSide);
-        }
+        return EncodeTrack720kIBM(ePattern, iDriveTrack, iDriveSide);
+    }
+    else if (m_eGeoFormat == FMT_ATARI)
+    {
+        return EncodeTrack800kAtari(ePattern, iDriveTrack, iDriveSide);
     }
     else // (m_eGeoFormat == FMT_AMIGA)
     {
@@ -687,8 +684,8 @@ uint32_t EncoderMFM::EncodeTrack880kAmiga(encoding_pattern_t ePattern, int iDriv
 
 void EncoderMFM::WriteBit(int iBit)
 {
-    // deal handle different speeds - atari 880k disks write at 261khz instead of 250khz
-    const uint32_t uiBitTime = (m_eGeoFormat == FMT_IBM && m_iGeoSectors == 11) ? (80000 / 261) : (80000 / 250);
+    // deal with different speeds - atari 880k disks write at 261khz instead of 250khz
+    const uint32_t uiBitTime = (m_eGeoFormat == FMT_ATARI && m_iGeoSectors == 11) ? (80000 / 261) : (80000 / 250);
     
     if (iBit == m_iOldBit)
     {
@@ -753,8 +750,8 @@ void EncoderMFM::WriteSpecialC2C2C2(void)
 
 void EncoderMFM::WriteSpecialA1A1A1(void)
 {
-    // deal handle different speeds - atari 880k disks write at 261khz instead of 250khz
-    const uint32_t uiBitTime = (m_eGeoFormat == FMT_IBM && m_iGeoSectors == 11) ? (80000 / 261) : (80000 / 250);
+    // deal with different speeds - atari 880k disks write at 261khz instead of 250khz
+    const uint32_t uiBitTime = (m_eGeoFormat == FMT_ATARI && m_iGeoSectors == 11) ? (80000 / 261) : (80000 / 250);
 
     DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 3 / 2;    m_uiDeltaPos++;
     DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 2;        m_uiDeltaPos++;

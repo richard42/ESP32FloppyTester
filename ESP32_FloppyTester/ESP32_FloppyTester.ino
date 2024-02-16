@@ -300,18 +300,8 @@ void loop()
     }
     else if (strInput == "geometry")
     {
-        if (l_eGeoFormat == FMT_AMIGA)
-        {
-            Serial.write("Current geometry: AMIGA\r\n");
-        }
-        else if (l_eGeoFormat == FMT_IBM)
-        {
-            Serial.printf("Current geometry: IBM, %i sides, %i tracks, %i sectors.\r\n", l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
-        }
-        else
-        {
-            Serial.write("Current geometry: unknown/invalid.\r\n");
-        }
+        const char *pccFormat = (l_eGeoFormat == FMT_AMIGA) ? "AMIGA" : ((l_eGeoFormat == FMT_ATARI) ? "ATARI" : ((l_eGeoFormat == FMT_IBM) ? "IBM" : "UNKNOWN"));
+        Serial.printf("Current geometry: %s, %i sides, %i tracks, %i sectors.\r\n", pccFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
     }
     else if (strInput.find("geometry ") == 0)
     {
@@ -322,32 +312,51 @@ void loop()
             l_iGeoTracks = 80;
             l_iGeoSectors = 11;
         }
-        else if (strInput.find("geometry ibm ") == 0)
+        else if (strInput.find("geometry atari ") == 0)
         {
             char chSides[4] = {0, 0, 0, 0};
             int iTracks, iSectors;
-            if (sscanf(strInput.c_str() + 13, "%2s %d %d", chSides, &iTracks, &iSectors) != 3)
+            if (sscanf(strInput.c_str() + 15, "%2s %d %d", chSides, &iTracks, &iSectors) != 3)
+            {
+                Serial.printf("Error: invalid ATARI geometry '%s' specified.\r\n", strInput.c_str() + 15);
+            }
+            else if (strcmp(chSides, "ss") != 0 && strcmp(chSides, "ds") != 0)
+            {
+                Serial.printf("Error: invalid ATARI geometry sides '%s' specified. Must be SS or DS.\r\n", chSides);
+            }
+            else if (iTracks != 80 && iTracks != 81 && iTracks != 82 && iTracks != 83)
+            {
+                Serial.printf("Error: invalid ATARI geometry tracks '%i' specified. Must be 80-83.\r\n", iTracks);
+            }
+            else if (iSectors < 10 || iSectors > 11)
+            {
+                Serial.printf("Error: invalid ATARI geometry sectors '%i' specified. Must be 10 or 11.\r\n", iSectors);
+            }
+            else
+            {
+                l_eGeoFormat = FMT_ATARI;
+                l_iGeoSides = (strcmp(chSides, "ss") == 0) ? 1 : 2;
+                l_iGeoTracks = iTracks;
+                l_iGeoSectors = iSectors;
+            }
+        }
+        else if (strInput.find("geometry ibm ") == 0)
+        {
+            char chSides[4] = {0, 0, 0, 0};
+            if (sscanf(strInput.c_str() + 13, "%2s", chSides) != 1)
             {
                 Serial.printf("Error: invalid IBM geometry '%s' specified.\r\n", strInput.c_str() + 13);
             }
             else if (strcmp(chSides, "ss") != 0 && strcmp(chSides, "ds") != 0)
             {
-                Serial.printf("Error: invalid IBM geometry sides '%s' specified.\r\n", chSides);
-            }
-            else if (iTracks != 40 && iTracks != 80 && iTracks != 81 && iTracks != 82 && iTracks != 83)
-            {
-                Serial.printf("Error: invalid IBM geometry tracks '%i' specified.\r\n", iTracks);
-            }
-            else if (iSectors < 9 || iSectors > 11)
-            {
-                Serial.printf("Error: invalid IBM geometry sectors '%i' specified.\r\n", iSectors);
+                Serial.printf("Error: invalid IBM geometry sides '%s' specified. Must be SS or DS.\r\n", chSides);
             }
             else
             {
                 l_eGeoFormat = FMT_IBM;
                 l_iGeoSides = (strcmp(chSides, "ss") == 0) ? 1 : 2;
-                l_iGeoTracks = iTracks;
-                l_iGeoSectors = iSectors;
+                l_iGeoTracks = 80;
+                l_iGeoSectors = 9;
             }
         }
         else
@@ -510,8 +519,9 @@ void display_help(void)
     Serial.write("    SIDE <X>       - use side X (0 or 1) for single-sided commands.\r\n");
     Serial.write("    SIDE           - display current side number.\r\n");
     Serial.write("    GEOMETRY ...   - set/show current drive geometry. Examples:\r\n");
-    Serial.write("             IBM <SS/DS> <40/80/81/82/83> <9/10/11> - set IBM format, sides, track count, sector count.\r\n");
-    Serial.write("             AMIGA                                  - set Amiga format, 2 sides, 80 tracks, 11 sectors.\r\n");
+    Serial.write("             IBM   <SS/DS>         - set IBM format, single/double sided, 80 track, 9 sectors.\r\n");
+    Serial.write("             ATARI <SS/DS> <X> <Y> - set Atari format, single/double sided, X tracks, Y sectors.\r\n");
+    Serial.write("             AMIGA                 - set Amiga format, 2 sides, 80 tracks, 11 sectors.\r\n");
     Serial.write("    TRACK READ     - read current track and print decoded data summary (requires formatted disk).\r\n");
     Serial.write("    TRACK ERASE    - erase current track and validate erasure (destroys data on disk).\r\n");
     Serial.write("    TRACK WRITE ...- write track data with current format and given pattern (destroys data on disk).\r\n");
@@ -1844,7 +1854,7 @@ void capture_track_data(void)
 {
     ESP_INTR_DISABLE(XT_TIMER_INTNUM);
 
-    if (l_eGeoFormat == FMT_IBM)
+    if (l_eGeoFormat == FMT_IBM || l_eGeoFormat == FMT_ATARI)
     {
         // wait until index pulse first arrives
         do {} while (gpio_get_level(FDC_INDEX) == 1);
@@ -1860,7 +1870,7 @@ void capture_track_data(void)
     MCPWM0.int_ena.val = CAP1_INT_EN;
     mcpwm_isr_register(MCPWM_UNIT_0, onSignalEdge, NULL, ESP_INTR_FLAG_IRAM, NULL);
 
-    if (l_eGeoFormat == FMT_IBM)
+    if (l_eGeoFormat == FMT_IBM || l_eGeoFormat == FMT_ATARI)
     {
         // wait until the index pulse leaves
         do {} while (gpio_get_level(FDC_INDEX) == 1);
@@ -1883,7 +1893,7 @@ void capture_track_data(void)
 float record_track_data(uint32_t uiDeltaMax)
 {
     // wait until index pulse first arrives for IBM-style index-aligned formats
-    if (l_eGeoFormat != FMT_AMIGA)
+    if (l_eGeoFormat == FMT_IBM || l_eGeoFormat == FMT_ATARI)
     {
         do {} while (gpio_get_level(FDC_INDEX) == 1);
         do {} while (gpio_get_level(FDC_INDEX) == 0);

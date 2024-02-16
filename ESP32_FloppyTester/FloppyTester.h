@@ -20,8 +20,8 @@
 #if !defined(FLOPPY_TESTER_H)
 #define FLOPPY_TESTER_H
 
-typedef enum _modulation { MOD_INVALID, MOD_MFM, MOD_GCR } geo_modulation_t;
-typedef enum _geo_format { FMT_INVALID, FMT_IBM, FMT_AMIGA } geo_format_t;
+typedef enum _modulation { MOD_INVALID, MOD_MFM, MOD_GCR              } geo_modulation_t;
+typedef enum _geo_format { FMT_INVALID, FMT_IBM, FMT_ATARI, FMT_AMIGA } geo_format_t;
 
 typedef enum _encoding_pattern
 {
