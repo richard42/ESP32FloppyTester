@@ -484,6 +484,25 @@ EncoderMFM::~EncoderMFM()
 
 uint32_t EncoderMFM::EncodeTrack(encoding_pattern_t ePattern, int iDriveTrack, int iDriveSide)
 {
+    if (m_eGeoFormat == FMT_IBM)
+    {
+        if (m_iGeoSectors == 9)
+        {
+            return EncodeTrack720kIBM(ePattern, iDriveTrack, iDriveSide);
+        }
+        else // (m_iGeoSectors == 10 || m_iGeoSectors == 11)
+        {
+            return EncodeTrack800kAtari(ePattern, iDriveTrack, iDriveSide);
+        }
+    }
+    else // (m_eGeoFormat == FMT_AMIGA)
+    {
+        return EncodeTrack880kAmiga(ePattern, iDriveTrack, iDriveSide);
+    }
+}
+
+uint32_t EncoderMFM::EncodeTrack720kIBM(encoding_pattern_t ePattern, int iDriveTrack, int iDriveSide)
+{
     //const uint32_t uiBytesPreIndexGap = 96;
     //const uint32_t uiBytesIndexGap = 65;
     //const uint32_t uiBytesIDGap = 7 + 37;    // including sector header
@@ -572,17 +591,111 @@ uint32_t EncoderMFM::EncodeTrack(encoding_pattern_t ePattern, int iDriveTrack, i
     return m_uiDeltaPos;
 }
 
+uint32_t EncoderMFM::EncodeTrack800kAtari(encoding_pattern_t ePattern, int iDriveTrack, int iDriveSide)
+{
+    // starting 0x4e bytes
+    const uint32_t uiStartBytes = (m_iGeoSectors == 10) ? 40 : 76;
+    for (uint32_t ui = 0; ui < uiStartBytes; ui++)
+    {
+        WriteByte(0x4e);
+    }
+
+    for (uint32_t uiSector = 1; uiSector <= m_iGeoSectors; uiSector++)
+    {
+        uint8_t ucSectorData[512];
+        calc_sector_data(ePattern, uiSector, ucSectorData);
+        // pre-ID sync bytes
+        const uint32_t uiStartIDBytes = (m_iGeoSectors == 10) ? 36 : 3;
+        for (uint32_t ui = 0; ui < uiStartIDBytes; ui++)
+        {
+            WriteByte(0x4e);
+        }
+        for (uint32_t ui = 0; ui < 12; ui++)
+        {
+            WriteByte(0x00);
+        }
+        WriteSpecialA1A1A1();
+        // ID Record
+        WriteByte(0xfe);
+        WriteByte(iDriveTrack);
+        WriteByte(iDriveSide);
+        WriteByte(uiSector);
+        WriteByte(2);              // Sector Length 2 == 512 bytes
+        const uint16_t usIDCRC = calc_id_crc(iDriveSide, iDriveTrack, uiSector);
+        WriteByte(usIDCRC >> 8);
+        WriteByte(usIDCRC & 0xff);
+        // pre-data sync bytes
+        for (uint32_t ui = 0; ui < 24; ui++)
+        {
+            WriteByte(0x4e);
+        }
+        for (uint32_t ui = 0; ui < 12; ui++)
+        {
+            WriteByte(0x00);
+        }
+        WriteSpecialA1A1A1();
+        // Data field record
+        WriteByte(0xfb);
+        for (uint32_t uiDataIdx = 0; uiDataIdx < 512; uiDataIdx++)
+        {
+            WriteByte(ucSectorData[uiDataIdx]);
+        }
+        const uint16_t usDataCRC = calc_data_crc(ucSectorData);
+        WriteByte(usDataCRC >> 8);
+        WriteByte(usDataCRC & 0xff);
+    }
+
+    // ending 0x4e bytes
+    const uint32_t uiEndBytes = (m_iGeoSectors == 10) ? 90 : 82;
+    for (uint32_t ui = 0; ui < uiEndBytes; ui++)
+    {
+        WriteByte(0x4e);
+    }
+
+    return m_uiDeltaPos;
+}
+
+uint32_t EncoderMFM::EncodeTrack880kAmiga(encoding_pattern_t ePattern, int iDriveTrack, int iDriveSide)
+{
+    // starting zero bytes
+    for (uint32_t ui = 0; ui < 512; ui++)
+    {
+        WriteByte(0x00);
+    }
+
+    // all the sectors, one right after another (should be 11 of them)
+    for (uint32_t uiSector = 1; uiSector <= m_iGeoSectors; uiSector++)
+    {
+        uint8_t ucSectorData[540];
+        calc_amiga_sector(ePattern, iDriveTrack, iDriveSide, uiSector, ucSectorData);
+        // pre-ID sync bytes
+        WriteByte(0x00);
+        WriteByte(0x00);
+        WriteSpecialA1A1();
+        // ID Record plus data bytes
+        for (uint32_t ui = 0; ui < 540; ui++)
+        {
+            WriteByte(ucSectorData[ui]);
+        }
+    }
+
+    return m_uiDeltaPos;
+}
+
 //////////////////////////////////////////////////////////////////////////
 // private helper methods
 
 void EncoderMFM::WriteBit(int iBit)
 {
+    // deal handle different speeds - atari 880k disks write at 261khz instead of 250khz
+    const uint32_t uiBitTime = (m_eGeoFormat == FMT_IBM && m_iGeoSectors == 11) ? (80000 / 261) : (80000 / 250);
+    
     if (iBit == m_iOldBit)
     {
         if (m_iOldestBit == 1 && m_iOldBit == 0)
-            DELTA_ITEM(m_uiDeltaPos) = 6 * 80;
+            DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 3 / 2;
         else
-            DELTA_ITEM(m_uiDeltaPos) = 4 * 80;
+            DELTA_ITEM(m_uiDeltaPos) = uiBitTime;
         m_uiDeltaPos++;
         m_iOldestBit = m_iOldBit;
         return;
@@ -590,9 +703,9 @@ void EncoderMFM::WriteBit(int iBit)
     else if (m_iOldBit == 0 && iBit == 1)
     {
         if (m_iOldestBit == 1)
-            DELTA_ITEM(m_uiDeltaPos) = 8 * 80;
+            DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 2;
         else
-            DELTA_ITEM(m_uiDeltaPos) = 6 * 80;
+            DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 3 / 2;
         m_uiDeltaPos++;
         m_iOldestBit = 0;
         m_iOldBit = 1;
@@ -614,6 +727,8 @@ void EncoderMFM::WriteByte(int iByte)
 
 void EncoderMFM::WriteSpecialC2C2C2(void)
 {
+    // this is only used on IBM 720k disks
+    
     DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
     DELTA_ITEM(m_uiDeltaPos) = 4 * 80;    m_uiDeltaPos++;
     DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
@@ -638,18 +753,41 @@ void EncoderMFM::WriteSpecialC2C2C2(void)
 
 void EncoderMFM::WriteSpecialA1A1A1(void)
 {
+    // deal handle different speeds - atari 880k disks write at 261khz instead of 250khz
+    const uint32_t uiBitTime = (m_eGeoFormat == FMT_IBM && m_iGeoSectors == 11) ? (80000 / 261) : (80000 / 250);
+
+    DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 3 / 2;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 2;        m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 3 / 2;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 2;         m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 3 / 2;    m_uiDeltaPos++;
+  
+    DELTA_ITEM(m_uiDeltaPos) = uiBitTime;            m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 2;        m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 3 / 2;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 2;        m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 3 / 2;    m_uiDeltaPos++;
+
+    DELTA_ITEM(m_uiDeltaPos) = uiBitTime;            m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 2;        m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 3 / 2;    m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 2;        m_uiDeltaPos++;
+    DELTA_ITEM(m_uiDeltaPos) = uiBitTime * 3 / 2;    m_uiDeltaPos++;
+
+    m_iOldestBit = 0;
+    m_iOldBit = 1;
+}
+
+void EncoderMFM::WriteSpecialA1A1(void)
+{
+    // this is only used on Amiga 880k disks, at 250khz
+    
     DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
     DELTA_ITEM(m_uiDeltaPos) = 8 * 80;    m_uiDeltaPos++;
     DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
     DELTA_ITEM(m_uiDeltaPos) = 8 * 80;    m_uiDeltaPos++;
     DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
   
-    DELTA_ITEM(m_uiDeltaPos) = 4 * 80;    m_uiDeltaPos++;
-    DELTA_ITEM(m_uiDeltaPos) = 8 * 80;    m_uiDeltaPos++;
-    DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
-    DELTA_ITEM(m_uiDeltaPos) = 8 * 80;    m_uiDeltaPos++;
-    DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
-
     DELTA_ITEM(m_uiDeltaPos) = 4 * 80;    m_uiDeltaPos++;
     DELTA_ITEM(m_uiDeltaPos) = 8 * 80;    m_uiDeltaPos++;
     DELTA_ITEM(m_uiDeltaPos) = 6 * 80;    m_uiDeltaPos++;
@@ -696,6 +834,113 @@ void EncoderMFM::calc_sector_data(encoding_pattern_t ePattern, uint32_t uiSector
             case ENC_RANDOM:
                 pucSectorData[uiByteIdx] = (rand() & 0xff);
                 break;
+        }
+    }
+}
+
+void EncoderMFM::calc_amiga_sector(encoding_pattern_t ePattern, uint32_t uiDriveTrack, uint32_t uiDriveSide, uint32_t uiSectorNum, uint8_t pucSwizBytes[540])
+{
+    // start by writing the straight (un-swizzled) bytes for the sector header+data
+    uint8_t ucBytes[540];
+
+    // ID Record
+    ucBytes[0] = 0xff;
+    ucBytes[1] = (uiDriveTrack * 2 + uiDriveSide);
+    ucBytes[2] = uiSectorNum;
+    ucBytes[3] = m_iGeoSectors + 1 - uiSectorNum;
+    for (uint32_t ui = 4; ui < 20; ui++)
+    {
+        ucBytes[ui] = 0;    // OS recovery info
+    }
+    for (uint32_t ui = 20; ui < 28; ui++)
+    {
+        ucBytes[ui] = 0;    // checksums
+    }
+
+    // fill in track data
+    calc_sector_data(ePattern, uiSectorNum, ucBytes + 28);
+
+    // multiplex (swizzle) the bytes
+    memset(pucSwizBytes, 0, 540);
+    for (uint32_t ui = 0; ui < 540; ui++)
+    {
+        uint32_t uiBlockStart = 0, uiPairOffset = 0;
+        if (ui < 4)
+            { uiBlockStart = 0;  uiPairOffset = 2; }
+        else if (ui < 20)
+            { uiBlockStart = 4;  uiPairOffset = 8; }
+        else if (ui < 24)
+            { uiBlockStart = 20; uiPairOffset = 2; }
+        else if (ui < 28)
+            { uiBlockStart = 24; uiPairOffset = 2; }
+        else
+            { uiBlockStart = 28; uiPairOffset = 256; }
+        const uint32_t uiOddIdx = (ui - uiBlockStart) / 2 + uiBlockStart;
+        const uint32_t uiEvenIdx = uiOddIdx + uiPairOffset;
+        const uint8_t ucByte = ucBytes[ui];
+        const uint8_t ucOddBits =  ((ucByte & 0x80) >> 4) + ((ucByte & 0x20) >> 3) + ((ucByte & 0x08) >> 2) + ((ucByte & 0x02) >> 1);
+        const uint8_t ucEvenBits = ((ucByte & 0x40) >> 3) + ((ucByte & 0x10) >> 2) + ((ucByte & 0x04) >> 1) + (ucByte & 0x01);
+        if (ui & 1)
+        {
+            pucSwizBytes[uiOddIdx]  |= ucOddBits;
+            pucSwizBytes[uiEvenIdx] |= ucEvenBits;
+        }
+        else
+        {
+            pucSwizBytes[uiOddIdx]  |= (ucOddBits << 4);
+            pucSwizBytes[uiEvenIdx] |= (ucEvenBits << 4);
+        }
+    }
+
+    // calculate these worthless checksums
+    uint16_t usHeaderCk = 0;
+    for (uint32_t ui = 0; ui < 10; ui++)
+    {
+        uint16_t usWord = (pucSwizBytes[ui*2] << 8) + pucSwizBytes[ui*2+1];
+        usHeaderCk ^= usWord;
+    }
+    uint16_t usDataCk = 0;
+    for (uint32_t ui = 14; ui < 270; ui++)
+    {
+        uint16_t usWord = (pucSwizBytes[ui*2] << 8) + pucSwizBytes[ui*2+1];
+        usDataCk ^= usWord;
+    }
+    uint32_t uiHeaderCk = 0, uiDataCk = 0;
+    for (uint32_t ui = 0; ui < 16; ui++)
+    {
+        uiHeaderCk |= (usHeaderCk & (1 << ui)) << ui;
+        uiDataCk   |= (usDataCk   & (1 << ui)) << ui;
+    }
+
+    // write the straight checksums into the straight data buffer
+    ucBytes[20] = ((uiHeaderCk >> 24) & 0xff);
+    ucBytes[21] = ((uiHeaderCk >> 16) & 0xff);
+    ucBytes[22] = ((uiHeaderCk >>  8) & 0xff);
+    ucBytes[23] = ((uiHeaderCk >>  0) & 0xff);
+    ucBytes[24] = ((uiDataCk >> 24) & 0xff);
+    ucBytes[25] = ((uiDataCk >> 16) & 0xff);
+    ucBytes[26] = ((uiDataCk >>  8) & 0xff);
+    ucBytes[27] = ((uiDataCk >>  0) & 0xff);
+
+    // and finally, swizzle the checksums
+    for (uint32_t ui = 20; ui < 28; ui++)
+    {
+        const uint32_t uiBlockStart = (ui < 24) ? 20 : 24;
+        const uint32_t uiPairOffset = 2;
+        const uint32_t uiOddIdx = (ui - uiBlockStart) / 2 + uiBlockStart;
+        const uint32_t uiEvenIdx = uiOddIdx + uiPairOffset;
+        const uint8_t ucByte = ucBytes[ui];
+        const uint8_t ucOddBits =  ((ucByte & 0x80) >> 4) + ((ucByte & 0x20) >> 3) + ((ucByte & 0x08) >> 2) + ((ucByte & 0x02) >> 1);
+        const uint8_t ucEvenBits = ((ucByte & 0x40) >> 3) + ((ucByte & 0x10) >> 2) + ((ucByte & 0x04) >> 1) + (ucByte & 0x01);
+        if (ui & 1)
+        {
+            pucSwizBytes[uiOddIdx]  |= ucOddBits;
+            pucSwizBytes[uiEvenIdx] |= ucEvenBits;
+        }
+        else
+        {
+            pucSwizBytes[uiOddIdx]  |= (ucOddBits << 4);
+            pucSwizBytes[uiEvenIdx] |= (ucEvenBits << 4);
         }
     }
 }

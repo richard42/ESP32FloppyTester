@@ -1182,13 +1182,6 @@ void track_write_pattern(encoding_pattern_t ePattern)
         return;
     }
 
-    // validate format type
-    if (l_eGeoFormat != FMT_IBM)
-    {
-        Serial.write("Error: only IBM format is current supported for track writing.\r\n");
-        return;
-    }
-    
     // create an encoder, and write out pulse intervals for the given data pattern
     EncoderMFM encoder(l_pusDeltaBuffers, l_eGeoFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
     uint32_t uiDeltaMax = encoder.EncodeTrack(ePattern, l_iDriveTrack, l_iDriveSide);
@@ -1452,13 +1445,6 @@ void disk_write_pattern(encoding_pattern_t ePattern)
         return;
     }
 
-    // validate format type
-    if (l_eGeoFormat != FMT_IBM)
-    {
-        Serial.write("Error: only IBM format is current supported for disk writing.\r\n");
-        return;
-    }
-    
     // select the drive, if necessary
     if (!l_bDriveMotorOn)
     {
@@ -1576,13 +1562,6 @@ void disk_readwrite_test(void)
         return;
     }
 
-    // validate format type
-    if (l_eGeoFormat != FMT_IBM)
-    {
-        Serial.write("Error: only IBM format is current supported for disk writing.\r\n");
-        return;
-    }
-    
     // select the drive, if necessary
     if (!l_bDriveMotorOn)
     {
@@ -1903,9 +1882,12 @@ void capture_track_data(void)
 
 float record_track_data(uint32_t uiDeltaMax)
 {
-    // wait until index pulse first arrives
-    do {} while (gpio_get_level(FDC_INDEX) == 1);
-    do {} while (gpio_get_level(FDC_INDEX) == 0);
+    // wait until index pulse first arrives for IBM-style index-aligned formats
+    if (l_eGeoFormat != FMT_AMIGA)
+    {
+        do {} while (gpio_get_level(FDC_INDEX) == 1);
+        do {} while (gpio_get_level(FDC_INDEX) == 0);
+    }
 
     // set the Write Gate line
     gpio_set_level(FDC_WGATE, 1);
