@@ -607,7 +607,7 @@ void detect_pins(void)
     {
         const gpio_num_t iThisPin = aiSelectPins[i];
         gpio_set_level(iThisPin, 1);
-        Serial.printf("Select pin %i/5 activated. Press key for drive state: (M)otor on, (L)ight on, (N)othing on, (A)bort?", i+1);
+        Serial.printf("Select pin %i/5 activated. Press key for drive state: (M)otor on, (L)ight on, (B)oth on, (N)othing on, (A)bort?", i+1);
         char chKey = 0;
         do
         {
@@ -617,13 +617,15 @@ void detect_pins(void)
                 continue;
             }
             chKey = Serial.read() & ~32;
-        } while (chKey != 'M' && chKey != 'L' && chKey != 'N' && chKey != 'A');
+        } while (chKey != 'M' && chKey != 'L' && chKey != 'B' && chKey != 'N' && chKey != 'A');
         Serial.printf("%c\r\n", chKey);
         gpio_set_level(iThisPin, 0);
         if (chKey == 'M')
             iDriveMotor = iThisPin;
         if (chKey == 'L')
             iDriveSelect = iThisPin;
+        if (chKey == 'B')
+            iDriveMotor = iDriveSelect = iThisPin;
         if (chKey =='A')
             break;
         bFinished = (i == 4);
