@@ -39,12 +39,12 @@ typedef struct _track_metadata
     float             fPulseIntervalSpread;
     geo_modulation_t  eModulation;
     uint8_t           ucSectorsFound;
-    uint8_t           ucSectorNum[12];
-    uint8_t           ucSectorSide[12];
-    uint8_t           ucSectorCylinder[12];
-    uint8_t           ucSectorGoodID[12];
-    uint8_t           ucSectorGoodData[12];
-    uint32_t          uiSectorDataCRC[12];
+    uint8_t           ucSectorNum[18];
+    uint8_t           ucSectorSide[18];
+    uint8_t           ucSectorCylinder[18];
+    uint8_t           ucSectorGoodID[18];
+    uint8_t           ucSectorGoodData[18];
+    uint32_t          uiSectorDataCRC[18];
 } track_metadata_t;
 
 

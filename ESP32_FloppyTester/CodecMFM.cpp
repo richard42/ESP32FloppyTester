@@ -82,7 +82,7 @@ void DecoderMFM::DecodeTrack(geo_format_t eFormat, bool bDebugPrint, track_metad
         // handle state
         if (uiNumSpecMatch == 0)
         {
-            if (uiFoundZeros < (eFormat == FMT_AMIGA ? 12 : 80))
+            if (uiFoundZeros < (eFormat == FMT_AMIGA ? 12 : 60))
             {
                 if (uiWavelen == 2)
                     uiFoundZeros++;
@@ -151,6 +151,9 @@ void DecoderMFM::DecodeTrack(geo_format_t eFormat, bool bDebugPrint, track_metad
             else // (pucSpecMatch == pucSpecialA1)
             {
                 ui = ReadSectorBytesIBM(ui + 1, bDebugPrint, rsMeta) - 1;
+                uiFoundZeros = 0;
+                uiNumSpecMatch = 0;
+                pucSpecMatch = NULL;
                 continue;
             }
         }
@@ -270,7 +273,7 @@ uint32_t DecoderMFM::ReadSectorBytesIBM(uint32_t uiStartIdx, bool bDebugPrint, t
                                   (ucBytes[5] << 8) + ucBytes[6], (m_usCurrentCRC == 0 ? "GOOD" : "BAD"));
                 m_uiSectorDataLength = 1 << (7 + ucBytes[4]);
                 // set metadata
-                if (rsMeta.ucSectorsFound < 12)
+                if (rsMeta.ucSectorsFound < 18)
                 {
                     rsMeta.ucSectorNum[rsMeta.ucSectorsFound] = ucBytes[3];
                     rsMeta.ucSectorSide[rsMeta.ucSectorsFound] = ucBytes[2];
@@ -288,7 +291,7 @@ uint32_t DecoderMFM::ReadSectorBytesIBM(uint32_t uiStartIdx, bool bDebugPrint, t
                                   usDataCRC, (m_usCurrentCRC == 0 ? "GOOD" : "BAD"));
                 m_uiSectorDataLength = 0;
                 // set metadata
-                if (rsMeta.ucSectorsFound < 12)
+                if (rsMeta.ucSectorsFound < 18)
                 {
                     rsMeta.ucSectorGoodData[rsMeta.ucSectorsFound] = (m_usCurrentCRC == 0 ? 1 : 0);
                     rsMeta.uiSectorDataCRC[rsMeta.ucSectorsFound] = usDataCRC;
@@ -431,7 +434,7 @@ uint32_t DecoderMFM::ReadSectorBytesAmiga(uint32_t uiStartIdx, bool bDebugPrint,
                           ucBytes[0], ucBytes[1], ucBytes[2], ucBytes[3],
                           uiHeaderCk, (uiHeaderCk == uiCalcHeaderCk ? "GOOD" : "BAD"), uiDataCk, (uiDataCk == uiCalcDataCk ? "GOOD" : "BAD"));
         // set metadata
-        if (rsMeta.ucSectorsFound < 12)
+        if (rsMeta.ucSectorsFound < 18)
         {
             rsMeta.ucSectorNum[rsMeta.ucSectorsFound] = ucBytes[2] + 1;
             rsMeta.ucSectorSide[rsMeta.ucSectorsFound] = ucBytes[1] & 1;
@@ -486,7 +489,10 @@ uint32_t EncoderMFM::EncodeTrack(encoding_pattern_t ePattern, int iDriveTrack, i
 {
     if (m_eGeoFormat == FMT_IBM)
     {
-        return EncodeTrack720kIBM(ePattern, iDriveTrack, iDriveSide);
+        if (m_iGeoTracks == 40)
+          return EncodeTrack360kIBM(ePattern, iDriveTrack, iDriveSide);
+        else
+          return EncodeTrack720kIBM(ePattern, iDriveTrack, iDriveSide);
     }
     else if (m_eGeoFormat == FMT_ATARI)
     {
@@ -496,6 +502,69 @@ uint32_t EncoderMFM::EncodeTrack(encoding_pattern_t ePattern, int iDriveTrack, i
     {
         return EncodeTrack880kAmiga(ePattern, iDriveTrack, iDriveSide);
     }
+}
+
+uint32_t EncoderMFM::EncodeTrack360kIBM(encoding_pattern_t ePattern, int iDriveTrack, int iDriveSide)
+{
+    // 200ms / 4us = 50,000 bits / 8 = 6250 bytes per track
+
+    // post-index gap
+    for (uint32_t ui = 0; ui < 32; ui++)
+    {
+        WriteByte(0x4e);
+    }
+
+    for (uint32_t uiSector = 1; uiSector <= m_iGeoSectors; uiSector++)
+    {
+        uint8_t ucSectorData[256];
+        calc_sector_data(ePattern, 256, uiSector, ucSectorData);
+        // ID Record
+        for (uint32_t ui = 0; ui < 8; ui++)
+        {
+            WriteByte(0x00);
+        }
+        WriteSpecialA1A1A1();
+        WriteByte(0xfe);
+        WriteByte(iDriveTrack);
+        WriteByte(iDriveSide);
+        WriteByte(uiSector);
+        WriteByte(1);              // Sector Length 1 == 256 bytes
+        const uint16_t usIDCRC = calc_id_crc(iDriveSide, iDriveTrack, uiSector, 1);
+        WriteByte(usIDCRC >> 8);
+        WriteByte(usIDCRC & 0xff);
+        // ID Gap
+        for (uint32_t ui = 0; ui < 22; ui++)
+        {
+            WriteByte(0x4e);
+        }
+        for (uint32_t ui = 0; ui < 12; ui++)
+        {
+            WriteByte(0x00);
+        }
+        WriteSpecialA1A1A1();
+        // Data field record
+        WriteByte(0xfb);
+        for (uint32_t uiDataIdx = 0; uiDataIdx < 256; uiDataIdx++)
+        {
+            WriteByte(ucSectorData[uiDataIdx]);
+        }
+        const uint16_t usDataCRC = calc_data_crc(ucSectorData);
+        WriteByte(usDataCRC >> 8);
+        WriteByte(usDataCRC & 0xff);
+        // data gap
+        for (uint32_t ui = 0; ui < 24; ui++)
+        {
+            WriteByte(0x4e);
+        }
+    }
+
+    // gap 4
+    for (uint32_t ui = 0; ui < 134; ui++)
+    {
+        WriteByte(0x4e);
+    }
+
+    return m_uiDeltaPos;
 }
 
 uint32_t EncoderMFM::EncodeTrack720kIBM(encoding_pattern_t ePattern, int iDriveTrack, int iDriveSide)
@@ -535,14 +604,14 @@ uint32_t EncoderMFM::EncodeTrack720kIBM(encoding_pattern_t ePattern, int iDriveT
     for (uint32_t uiSector = 1; uiSector <= m_iGeoSectors; uiSector++)
     {
         uint8_t ucSectorData[512];
-        calc_sector_data(ePattern, uiSector, ucSectorData);
+        calc_sector_data(ePattern, 512, uiSector, ucSectorData);
         // ID Record
         WriteByte(0xfe);
         WriteByte(iDriveTrack);
         WriteByte(iDriveSide);
         WriteByte(uiSector);
         WriteByte(2);              // Sector Length 2 == 512 bytes
-        const uint16_t usIDCRC = calc_id_crc(iDriveSide, iDriveTrack, uiSector);
+        const uint16_t usIDCRC = calc_id_crc(iDriveSide, iDriveTrack, uiSector, 2);
         WriteByte(usIDCRC >> 8);
         WriteByte(usIDCRC & 0xff);
         // ID Gap
@@ -600,7 +669,7 @@ uint32_t EncoderMFM::EncodeTrack800kAtari(encoding_pattern_t ePattern, int iDriv
     for (uint32_t uiSector = 1; uiSector <= m_iGeoSectors; uiSector++)
     {
         uint8_t ucSectorData[512];
-        calc_sector_data(ePattern, uiSector, ucSectorData);
+        calc_sector_data(ePattern, 512, uiSector, ucSectorData);
         // pre-ID sync bytes
         const uint32_t uiStartIDBytes = (m_iGeoSectors == 10) ? 36 : 3;
         for (uint32_t ui = 0; ui < uiStartIDBytes; ui++)
@@ -618,7 +687,7 @@ uint32_t EncoderMFM::EncodeTrack800kAtari(encoding_pattern_t ePattern, int iDriv
         WriteByte(iDriveSide);
         WriteByte(uiSector);
         WriteByte(2);              // Sector Length 2 == 512 bytes
-        const uint16_t usIDCRC = calc_id_crc(iDriveSide, iDriveTrack, uiSector);
+        const uint16_t usIDCRC = calc_id_crc(iDriveSide, iDriveTrack, uiSector, 2);
         WriteByte(usIDCRC >> 8);
         WriteByte(usIDCRC & 0xff);
         // pre-data sync bytes
@@ -795,7 +864,7 @@ void EncoderMFM::WriteSpecialA1A1(void)
     m_iOldBit = 1;
 }
 
-void EncoderMFM::calc_sector_data(encoding_pattern_t ePattern, uint32_t uiSectorNum, uint8_t *pucSectorData)
+void EncoderMFM::calc_sector_data(encoding_pattern_t ePattern, uint32_t uiLength, uint32_t uiSectorNum, uint8_t *pucSectorData)
 {
     // seed PRNG if necessary
     if (m_eGeoFormat == ENC_RANDOM)
@@ -807,7 +876,7 @@ void EncoderMFM::calc_sector_data(encoding_pattern_t ePattern, uint32_t uiSector
     }
 
     // write bytes
-    for (uint32_t uiByteIdx = 0; uiByteIdx < 512; uiByteIdx++)
+    for (uint32_t uiByteIdx = 0; uiByteIdx < uiLength; uiByteIdx++)
     {
         switch(ePattern)
         {
@@ -862,7 +931,7 @@ void EncoderMFM::calc_amiga_sector(encoding_pattern_t ePattern, uint32_t uiDrive
     }
 
     // fill in track data
-    calc_sector_data(ePattern, uiSectorNum, ucBytes + 28);
+    calc_sector_data(ePattern, 512, uiSectorNum, ucBytes + 28);
 
     // multiplex (swizzle) the bytes
     memset(pucSwizBytes, 0, 540);
@@ -949,9 +1018,9 @@ void EncoderMFM::calc_amiga_sector(encoding_pattern_t ePattern, uint32_t uiDrive
     }
 }
 
-uint16_t EncoderMFM::calc_id_crc(uint32_t uiDriveSide, uint32_t uiDriveTrack, uint32_t uiSectorNum)
+uint16_t EncoderMFM::calc_id_crc(uint32_t uiDriveSide, uint32_t uiDriveTrack, uint32_t uiSectorNum, uint32_t uiSectorLength)
 {
-    uint8_t ucRecordBytes[8] = { 0xa1, 0xa1, 0xa1, 0xfe, uiDriveTrack, uiDriveSide, uiSectorNum, 2 };
+    uint8_t ucRecordBytes[8] = { 0xa1, 0xa1, 0xa1, 0xfe, uiDriveTrack, uiDriveSide, uiSectorNum, uiSectorLength };
 
     uint16_t usCurrentCRC = 0xffff;
     DecoderMFM::advance_crc16(usCurrentCRC, ucRecordBytes, 8);

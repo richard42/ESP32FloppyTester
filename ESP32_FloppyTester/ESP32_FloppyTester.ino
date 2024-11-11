@@ -344,7 +344,8 @@ void loop()
         else if (strInput.find("geometry ibm ") == 0)
         {
             char chSides[4] = {0, 0, 0, 0};
-            if (sscanf(strInput.c_str() + 13, "%2s", chSides) != 1)
+            int iTracks, iSectors;
+            if (sscanf(strInput.c_str() + 13, "%2s %d %d", chSides, &iTracks, &iSectors) != 3)
             {
                 Serial.printf("Error: invalid IBM geometry '%s' specified.\r\n", strInput.c_str() + 13);
             }
@@ -352,12 +353,20 @@ void loop()
             {
                 Serial.printf("Error: invalid IBM geometry sides '%s' specified. Must be SS or DS.\r\n", chSides);
             }
+            else if (iTracks != 40 && iTracks != 80)
+            {
+                Serial.printf("Error: invalid IBM geometry tracks '%i' specified. Must be 40 or 80.\r\n", iTracks);
+            }
+            else if (iSectors != 9 && iSectors != 18)
+            {
+                Serial.printf("Error: invalid IBM geometry sectors '%i' specified. Must be 9 or 18.\r\n", iSectors);
+            }
             else
             {
                 l_eGeoFormat = FMT_IBM;
                 l_iGeoSides = (strcmp(chSides, "ss") == 0) ? 1 : 2;
-                l_iGeoTracks = 80;
-                l_iGeoSectors = 9;
+                l_iGeoTracks = iTracks;
+                l_iGeoSectors = iSectors;
             }
         }
         else

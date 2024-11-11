@@ -62,6 +62,7 @@ public:
 
     // private methods
 private:
+    uint32_t EncodeTrack360kIBM(encoding_pattern_t ePattern, int iDriveTrack, int iDriveSide);
     uint32_t EncodeTrack720kIBM(encoding_pattern_t ePattern, int iDriveTrack, int iDriveSide);
     uint32_t EncodeTrack800kAtari(encoding_pattern_t ePattern, int iDriveTrack, int iDriveSide);
     uint32_t EncodeTrack880kAmiga(encoding_pattern_t ePattern, int iDriveTrack, int iDriveSide);
@@ -71,9 +72,9 @@ private:
     void WriteSpecialC2C2C2(void);
     void WriteSpecialA1A1A1(void);
     void WriteSpecialA1A1(void);
-    void calc_sector_data(encoding_pattern_t ePattern, uint32_t uiSectorNum, uint8_t *pucSectorData);
+    void calc_sector_data(encoding_pattern_t ePattern, uint32_t uiLength, uint32_t uiSectorNum, uint8_t *pucSectorData);
     void calc_amiga_sector(encoding_pattern_t ePattern, uint32_t uiDriveTrack, uint32_t uiDriveSide, uint32_t uiSectorNum, uint8_t pucSectorData[540]);
-    uint16_t calc_id_crc(uint32_t uiDriveSide, uint32_t uiDriveTrack, uint32_t uiSectorNum);
+    uint16_t calc_id_crc(uint32_t uiDriveSide, uint32_t uiDriveTrack, uint32_t uiSectorNum, uint32_t uiSectorLength);
     uint16_t calc_data_crc(uint8_t *pucSectorData);
 
     // member variables
