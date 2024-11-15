@@ -36,6 +36,7 @@
 
 #include "FloppyTester.h"
 #include "CodecMFM.h"
+#include "CodecGCR.h"
 
 //////////////////////////////////////////////////////////////////////////
 // Definitions
@@ -301,7 +302,10 @@ void loop()
     }
     else if (strInput == "geometry")
     {
-        const char *pccFormat = (l_eGeoFormat == FMT_AMIGA) ? "AMIGA" : ((l_eGeoFormat == FMT_ATARI) ? "ATARI" : ((l_eGeoFormat == FMT_IBM) ? "IBM" : "UNKNOWN"));
+        const char *pccFormat = (l_eGeoFormat == FMT_AMIGA) ? "AMIGA" : 
+                                ((l_eGeoFormat == FMT_ATARI) ? "ATARI" :
+                                 ((l_eGeoFormat == FMT_IBM) ? "IBM" : 
+                                  ((l_eGeoFormat == FMT_C64) ? "COMMODORE" : "UNKNOWN")));
         Serial.printf("Current geometry: %s, %i sides, %i tracks, %i sectors.\r\n", pccFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
     }
     else if (strInput.find("geometry ") == 0)
@@ -312,6 +316,13 @@ void loop()
             l_iGeoSides = 2;
             l_iGeoTracks = 80;
             l_iGeoSectors = 11;
+        }
+        else if (strInput == "geometry commodore")
+        {
+            l_eGeoFormat = FMT_C64;
+            l_iGeoSides = 1;
+            l_iGeoTracks = 35;
+            l_iGeoSectors = 21;
         }
         else if (strInput.find("geometry atari ") == 0)
         {
@@ -353,9 +364,9 @@ void loop()
             {
                 Serial.printf("Error: invalid IBM geometry sides '%s' specified. Must be SS or DS.\r\n", chSides);
             }
-            else if (iTracks != 40 && iTracks != 80)
+            else if (iTracks != 35 && iTracks != 40 && iTracks != 80)
             {
-                Serial.printf("Error: invalid IBM geometry tracks '%i' specified. Must be 40 or 80.\r\n", iTracks);
+                Serial.printf("Error: invalid IBM geometry tracks '%i' specified. Must be 35, 40, or 80.\r\n", iTracks);
             }
             else if (iSectors != 9 && iSectors != 18)
             {
@@ -533,9 +544,10 @@ void display_help(void)
     Serial.write("    SIDE <X>       - use side X (0 or 1) for single-sided commands.\r\n");
     Serial.write("    SIDE           - display current side number.\r\n");
     Serial.write("    GEOMETRY ...   - set/show current drive geometry. Examples:\r\n");
-    Serial.write("             IBM   <SS/DS>         - set IBM format, single/double sided, 80 track, 9 sectors.\r\n");
+    Serial.write("             IBM   <SS/DS> <X> <Y> - set IBM format, single/double sided, X tracks, Y sectors.\r\n");
     Serial.write("             ATARI <SS/DS> <X> <Y> - set Atari format, single/double sided, X tracks, Y sectors.\r\n");
     Serial.write("             AMIGA                 - set Amiga format, 2 sides, 80 tracks, 11 sectors.\r\n");
+    Serial.write("             COMMODORE             - set Commodore format, 1 side, 40 tracks, 17-21 sectors.\r\n");
     Serial.write("    TRACK READ     - read current track and print decoded data summary (requires formatted disk).\r\n");
     Serial.write("    TRACK ERASE    - erase current track and validate erasure (destroys data on disk).\r\n");
     Serial.write("    TRACK WRITE ...- write track data with current format and given pattern (destroys data on disk).\r\n");
@@ -1083,16 +1095,24 @@ void track_read(void)
     }
 
     // detect track encoding
-    uint32_t auiCountByWavelen[10];
-    for (uint32_t ui = 0; ui < 10; ui++)
+    uint32_t auiCountByWavelen[16];
+    float afAverageByWavelen[16];
+    for (uint32_t ui = 0; ui < 16; ui++)
     {
         if (mapCountByWavelen.count(ui) == 0)
+        {
             auiCountByWavelen[ui] = 0;
+            afAverageByWavelen[ui] = ui;
+        }
         else
+        {
             auiCountByWavelen[ui] = mapCountByWavelen[ui];
+            afAverageByWavelen[ui] = mapAvgByWavelen[ui];
+        }
     }
     if (l_uiDeltaCnt > 10)
     {
+        float fPeakCenters[3];
         if ((float) (auiCountByWavelen[4] + auiCountByWavelen[6] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
         {
             Serial.write("Double Density MFM track detected.\r\n");
@@ -1100,9 +1120,13 @@ void track_read(void)
             track_metadata_t sMeta;
             decoder.DecodeTrack(l_eGeoFormat, true, sMeta);
         }
-        else if ((float) (auiCountByWavelen[3] + auiCountByWavelen[5] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
+        else if (DecoderGCR::DetectEncoding(auiCountByWavelen, afAverageByWavelen, l_pusDeltaBuffers, l_uiDeltaPos, fPeakCenters))
         {
-            Serial.write("Double Density GCR track detected.\r\n");
+            Serial.printf("Double Density GCR track detected with peaks at %.3f, %.3f, %.3f microseconds.\r\n",
+                          fPeakCenters[0], fPeakCenters[1], fPeakCenters[2]);
+            DecoderGCR decoder((const uint16_t **) l_pusDeltaBuffers, l_uiDeltaPos);
+            track_metadata_t sMeta;
+            decoder.DecodeTrack(l_eGeoFormat, true, sMeta, fPeakCenters);
         }
     }
 }
@@ -1778,7 +1802,7 @@ uint32_t format_track_metadata(int iSide, int iTrack, track_metadata_t& rsMeta, 
     }
     else // (rsMeta.eModulation == MOD_INVALID)
     {
-        strcat(pchText, "No sectors found");
+        strcat(pchText, "No sectors found ");
         for (int iSector = 0; iSector < l_iGeoSectors; iSector++)
             strcat(pchText, "--- ");
         return l_iGeoSectors;
@@ -1836,7 +1860,10 @@ void calculate_track_metadata(track_metadata_t& rsMeta)
     rsMeta.fPulseIntervalSpread = calculate_interval_spread();
 
     // calculate histogram
-    uint32_t auiCountByWavelen[10];
+    uint32_t auiCountByWavelen[16];
+    float afAverageByWavelen[16];
+    memset(auiCountByWavelen, 0, 16 * sizeof(uint32_t));
+    memset(afAverageByWavelen, 0, 16 * sizeof(float));
     for (uint32_t ui = 0; ui < l_uiDeltaPos; ui++)
     {
         uint32_t uiDelta = DELTA_ITEM(ui);
@@ -1847,22 +1874,33 @@ void calculate_track_metadata(track_metadata_t& rsMeta)
         }
         const float fWavelen = uiDelta / 80.0f;
         const uint32_t uiWavelen = floorf(fWavelen + 0.5f);
-        if (uiWavelen < 10)
+        if (uiWavelen < 16)
         {
             auiCountByWavelen[uiWavelen]++;
+            afAverageByWavelen[uiWavelen] += fWavelen;
+        }
+    }
+    for (uint32_t ui = 0; ui < 16; ui++)
+    {
+        if (auiCountByWavelen[ui] > 0)
+        {
+            afAverageByWavelen[ui] /= auiCountByWavelen[ui];
         }
     }
     
     // detect track encoding
+    float fPeakCenters[3];
     if ((float) (auiCountByWavelen[4] + auiCountByWavelen[6] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
     {
         rsMeta.eModulation = MOD_MFM;
         DecoderMFM decoder((const uint16_t **) l_pusDeltaBuffers, l_uiDeltaPos);
         decoder.DecodeTrack(l_eGeoFormat, false, rsMeta);
     }
-    else if ((float) (auiCountByWavelen[3] + auiCountByWavelen[5] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
+    else if (DecoderGCR::DetectEncoding(auiCountByWavelen, afAverageByWavelen, l_pusDeltaBuffers, l_uiDeltaPos, fPeakCenters))
     {
         rsMeta.eModulation = MOD_GCR;
+        DecoderGCR decoder((const uint16_t **) l_pusDeltaBuffers, l_uiDeltaPos);
+        decoder.DecodeTrack(l_eGeoFormat, false, rsMeta, fPeakCenters);
     }
 
 }
@@ -1951,7 +1989,7 @@ void capture_track_data(void)
         // wait until the next index pulse arrives
         do {} while (gpio_get_level(FDC_INDEX) == 0);
     }
-    else if (l_eGeoFormat == FMT_AMIGA)
+    else if (l_eGeoFormat == FMT_AMIGA || l_eGeoFormat == FMT_C64)
     {
         // just wait for 220 milliseconds (10% longer than a full track)
         delay_micros(220000);

@@ -20,8 +20,8 @@
 #if !defined(FLOPPY_TESTER_H)
 #define FLOPPY_TESTER_H
 
-typedef enum _modulation { MOD_INVALID, MOD_MFM, MOD_GCR              } geo_modulation_t;
-typedef enum _geo_format { FMT_INVALID, FMT_IBM, FMT_ATARI, FMT_AMIGA } geo_format_t;
+typedef enum _modulation { MOD_INVALID, MOD_MFM, MOD_GCR                       } geo_modulation_t;
+typedef enum _geo_format { FMT_INVALID, FMT_IBM, FMT_ATARI, FMT_AMIGA, FMT_C64 } geo_format_t;
 
 typedef enum _encoding_pattern
 {
@@ -39,12 +39,12 @@ typedef struct _track_metadata
     float             fPulseIntervalSpread;
     geo_modulation_t  eModulation;
     uint8_t           ucSectorsFound;
-    uint8_t           ucSectorNum[18];
-    uint8_t           ucSectorSide[18];
-    uint8_t           ucSectorCylinder[18];
-    uint8_t           ucSectorGoodID[18];
-    uint8_t           ucSectorGoodData[18];
-    uint32_t          uiSectorDataCRC[18];
+    uint8_t           ucSectorNum[21];
+    uint8_t           ucSectorSide[21];
+    uint8_t           ucSectorCylinder[21];
+    uint8_t           ucSectorGoodID[21];
+    uint8_t           ucSectorGoodData[21];
+    uint32_t          uiSectorDataCRC[21];
 } track_metadata_t;
 
 
