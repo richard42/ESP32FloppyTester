@@ -467,12 +467,7 @@ void DecoderMFM::advance_crc16(uint16_t& usCurrentCRC, const uint8_t* data_p, ui
 // constructor/destructor for encoding class
 
 EncoderMFM::EncoderMFM(uint16_t *pusDeltaBuffers[], geo_format_t eFormat, int iSides, int iTracks, int iSectors)
- : m_pusDeltaBuffers(pusDeltaBuffers)
- , m_uiDeltaPos(0)
- , m_eGeoFormat(eFormat)
- , m_iGeoSides(iSides)
- , m_iGeoTracks(iTracks)
- , m_iGeoSectors(iSectors)
+ : EncoderBase(pusDeltaBuffers, eFormat, iSides, iTracks, iSectors)
  , m_iOldBit(0)
  , m_iOldestBit(0)
 {

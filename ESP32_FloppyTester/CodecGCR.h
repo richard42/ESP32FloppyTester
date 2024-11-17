@@ -47,3 +47,30 @@ private:
     const uint32_t    m_uiDeltaMax;
     uint32_t          m_uiSectorDataLength;
 };
+
+class EncoderGCR : public EncoderBase
+{
+public:
+    EncoderGCR(uint16_t *pusDeltaBuffers[], geo_format_t eFormat, int iSides, int iTracks, int iSectors);
+    ~EncoderGCR();
+
+    // accessors
+
+    // modifiers
+    uint32_t EncodeTrack(encoding_pattern_t ePattern, int iDriveTrack, int iDriveSide);
+
+    // private methods
+private:
+    uint32_t EncodeTrack180kC64(encoding_pattern_t ePattern, int iDriveTrack, int iDriveSide);
+
+    void WriteBit(int iBit);
+    void WriteNybble(int iNybble);
+    void WriteByte(int iByte);
+    void calc_sector_data(encoding_pattern_t ePattern, uint32_t uiLength, uint32_t uiSectorNum, uint8_t *pucSectorData);
+
+    // member variables
+private:
+    // state
+    uint32_t            m_uiBaseTime;
+    uint32_t            m_uiZeroes;
+};

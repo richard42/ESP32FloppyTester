@@ -49,7 +49,7 @@ private:
 };
 
 
-class EncoderMFM
+class EncoderMFM : public EncoderBase
 {
 public:
     EncoderMFM(uint16_t *pusDeltaBuffers[], geo_format_t eFormat, int iSides, int iTracks, int iSectors);
@@ -79,13 +79,6 @@ private:
 
     // member variables
 private:
-    uint16_t          **m_pusDeltaBuffers;
-    uint32_t            m_uiDeltaPos;
-    const geo_format_t  m_eGeoFormat;
-    const int           m_iGeoSides;
-    const int           m_iGeoTracks;
-    const int           m_iGeoSectors;
-
     // state
     int                 m_iOldBit;
     int                 m_iOldestBit;

@@ -56,7 +56,8 @@ bool DecoderGCR::DetectEncoding(const uint32_t auiCountByWavelen[16], const floa
     // go through the histogram and find isolated peaks in the histogram
     uint32_t uiPeakIdx[4];
     uint32_t uiNumPeaks = 0;
-    uint32_t uiThreshold = uiDeltaMax / 30;
+    const uint32_t uiThreshold = uiDeltaMax / 30;
+    const uint32_t uiLowThresh = uiDeltaMax / 250;
     bool bAboveThresh = false;
     for (uint32_t uiIdx = 0; uiIdx < 16; uiIdx++)
     {
@@ -88,6 +89,51 @@ bool DecoderGCR::DetectEncoding(const uint32_t auiCountByWavelen[16], const floa
     }
     if (bAboveThresh == true)
         uiNumPeaks++;
+
+    // special hack for test tracks written with all zeros -- they have a very small 3x signal
+    if (uiNumPeaks == 2 && afAverageByWavelen[uiPeakIdx[0]] >= 3.0 && afAverageByWavelen[uiPeakIdx[0]] <= 4.2 &&
+                           afAverageByWavelen[uiPeakIdx[1]] >= 6.1 && afAverageByWavelen[uiPeakIdx[1]] <= 8.2 &&
+        (auiCountByWavelen[3] + auiCountByWavelen[4] + auiCountByWavelen[6] + auiCountByWavelen[7] + auiCountByWavelen[8]) > uiDeltaMax * 0.96)
+    {
+        uint32_t uiCount3x = 0, uiMaxIdx = 0;
+        for (uint32_t ui = 9; ui <= 12; ui++)
+        {
+            const uint32_t uiThisCount = auiCountByWavelen[ui];
+            uiCount3x += uiThisCount;
+            if (ui == 9 || uiThisCount > auiCountByWavelen[uiMaxIdx])
+            {
+                uiMaxIdx = ui;
+            }
+        }
+        if (uiCount3x > uiLowThresh)
+        {
+            uiPeakIdx[2] = uiMaxIdx;
+            uiNumPeaks = 3;
+        }
+    }
+
+    // and another special hack for test tracks written with all ones -- they have a small 2x signal
+    if (uiNumPeaks == 2 && afAverageByWavelen[uiPeakIdx[0]] >= 3.0 && afAverageByWavelen[uiPeakIdx[0]] <= 4.2 &&
+                           afAverageByWavelen[uiPeakIdx[1]] >= 9.2 && afAverageByWavelen[uiPeakIdx[1]] <= 12.2 &&
+        (auiCountByWavelen[3] + auiCountByWavelen[4] + auiCountByWavelen[9] + auiCountByWavelen[10] + auiCountByWavelen[11] + auiCountByWavelen[12]) > uiDeltaMax * 0.94)
+    {
+        uint32_t uiCount2x = 0, uiMaxIdx = 0;
+        for (uint32_t ui = 6; ui <= 8; ui++)
+        {
+            const uint32_t uiThisCount = auiCountByWavelen[ui];
+            uiCount2x += uiThisCount;
+            if (ui == 6 || uiThisCount > auiCountByWavelen[uiMaxIdx])
+            {
+                uiMaxIdx = ui;
+            }
+        }
+        if (uiCount2x > uiLowThresh)
+        {
+            uiPeakIdx[2] = uiPeakIdx[1];
+            uiPeakIdx[1] = uiMaxIdx;
+            uiNumPeaks = 3;
+        }
+    }
 
     // if this track is GCR encoded, we expect to see 3 peaks, at 1x, 2x, and 3x of the base wavelength
     if (uiNumPeaks != 3)
@@ -331,21 +377,24 @@ uint32_t DecoderGCR::ReadSectorBytesC64(uint32_t uiStartIdx, const float fThresh
             // Sector ID record
             const bool bChecksumGood = (ucHeader[1] == (ucHeader[2] ^ ucHeader[3] ^ ucHeader[4] ^ ucHeader[5]));
             if (bDebugPrint)
-                Serial.printf("Sector ID: Track %i, Sector %i, Format ID=%02x%02x Checksum=%02x (%s)\r\n", ucHeader[3], ucHeader[2], ucHeader[4],
+                Serial.printf("Sector ID: Track %i, Sector %i, Format ID=%02x%02x Checksum=%02x (%s)\r\n", ucHeader[3], ucHeader[2] + 1, ucHeader[4],
                               ucHeader[5], ucHeader[1], (bChecksumGood ? "GOOD" : "BAD"));
             // set metadata
             if (rsMeta.ucSectorsFound < 21)
             {
                 for (uint32_t ui = 0; ui < rsMeta.ucSectorsFound; ui++)
                 {
-                    if (rsMeta.ucSectorNum[ui] == ucBytes[2] + 1)
+                    if (rsMeta.ucSectorNum[ui] == ucHeader[2] + 1 && rsMeta.ucSectorGoodID[ui] && rsMeta.ucSectorGoodData[ui])
                         bSectorAlreadyFound = true;
                 }
                 if (!bSectorAlreadyFound)
                 {
-                    rsMeta.ucSectorNum[rsMeta.ucSectorsFound] = ucBytes[2] + 1;
+                    // C64 tracks are numbered from one and sectors are numbered from zero
+                    // but in our track_metadata_t structure, sector numbers are expected to be starting
+                    // from one, while cylinders start at zero
+                    rsMeta.ucSectorNum[rsMeta.ucSectorsFound] = ucHeader[2] + 1;
                     rsMeta.ucSectorSide[rsMeta.ucSectorsFound] = 0;
-                    rsMeta.ucSectorCylinder[rsMeta.ucSectorsFound] = ucBytes[3] - 1;
+                    rsMeta.ucSectorCylinder[rsMeta.ucSectorsFound] = ucHeader[3] - 1;
                     rsMeta.ucSectorGoodID[rsMeta.ucSectorsFound] = (bChecksumGood ? 1 : 0);
                 }
             }
@@ -366,11 +415,207 @@ uint32_t DecoderGCR::ReadSectorBytesC64(uint32_t uiStartIdx, const float fThresh
             // set metadata
             if (rsMeta.ucSectorsFound < 21 && !bSectorAlreadyFound)
             {
-                rsMeta.ucSectorGoodData[rsMeta.ucSectorsFound] = (bDataChecksumGood ? 1 : 0);
-                rsMeta.uiSectorDataCRC[rsMeta.ucSectorsFound] = ucDataChecksum;
-                rsMeta.ucSectorsFound++;
+                // if the sector was previously read (but header or data checksum failed) then
+                // overwrite the old results with the new ones
+                int32_t iSectorPreviousBadRead = -1;
+                for (uint32_t ui = 0; ui < rsMeta.ucSectorsFound; ui++)
+                {
+                    // we only need to check for the existence of the same sector that we're reading now,
+                    // because if it was previously read then it must have failed, otherwise bSectorAlreadyFound would
+                    // be true and we wouldn't be executing this code.
+                    if (rsMeta.ucSectorNum[ui] == rsMeta.ucSectorNum[rsMeta.ucSectorsFound])
+                        iSectorPreviousBadRead = ui;
+                }
+                if (iSectorPreviousBadRead >= 0)
+                {
+                    rsMeta.ucSectorSide[iSectorPreviousBadRead] = rsMeta.ucSectorSide[rsMeta.ucSectorsFound];
+                    rsMeta.ucSectorCylinder[iSectorPreviousBadRead] = rsMeta.ucSectorCylinder[rsMeta.ucSectorsFound];
+                    rsMeta.ucSectorGoodID[iSectorPreviousBadRead] = rsMeta.ucSectorGoodID[rsMeta.ucSectorsFound];
+                    rsMeta.ucSectorGoodData[iSectorPreviousBadRead] = (bDataChecksumGood ? 1 : 0);
+                    rsMeta.uiSectorDataCRC[iSectorPreviousBadRead] = ucDataChecksum;
+                }
+                else
+                {
+                    rsMeta.ucSectorGoodData[rsMeta.ucSectorsFound] = (bDataChecksumGood ? 1 : 0);
+                    rsMeta.uiSectorDataCRC[rsMeta.ucSectorsFound] = ucDataChecksum;
+                    rsMeta.ucSectorsFound++;
+                }
             }
             return ui + 1;
+        }
+    }
+}
+
+//////////////////////////////////////////////////////////////////////////
+// constructor/destructor for encoding class
+
+EncoderGCR::EncoderGCR(uint16_t *pusDeltaBuffers[], geo_format_t eFormat, int iSides, int iTracks, int iSectors)
+ : EncoderBase(pusDeltaBuffers, eFormat, iSides, iTracks, iSectors)
+ , m_uiBaseTime(0)
+ , m_uiZeroes(0)
+{
+}
+
+EncoderGCR::~EncoderGCR()
+{
+}
+
+//////////////////////////////////////////////////////////////////////////
+// modifiers for encoding class
+
+uint32_t EncoderGCR::EncodeTrack(encoding_pattern_t ePattern, int iDriveTrack, int iDriveSide)
+{
+    if (m_eGeoFormat == FMT_C64)
+    {
+        // "iDriveTrack + 1" because cylinders are numbered from zero, but C64 "Track" numbers are numbered from one
+        return EncodeTrack180kC64(ePattern, iDriveTrack + 1, iDriveSide);
+    }
+}
+
+uint32_t EncoderGCR::EncodeTrack180kC64(encoding_pattern_t ePattern, int iDriveTrack, int iDriveSide)
+{
+    // 200ms / 4us = 50,000 bits / 8 = 6250 bytes per track
+
+    // calculate base timing duration and sector count for this track
+    const uint32_t uiNumSectors = (iDriveTrack < 18 ? 21 : (iDriveTrack < 25 ? 19 : (iDriveTrack < 31 ? 18 : 17)));
+    const float fBaseTime = (iDriveTrack < 18 ? 3.25f : (iDriveTrack < 25 ? 3.5f : (iDriveTrack < 31 ? 3.75f : 4.0f)));
+    m_uiBaseTime = (uint32_t) (fBaseTime * 80);
+    const uint32_t uiSectorGapBytes = (iDriveTrack < 18 ? 8 : (iDriveTrack < 25 ? 15 : (iDriveTrack < 31 ? 11 : 9)));
+
+    const uint8_t ucFormatID[2] = { '0', '0' };
+
+    // start with one millisecond of sync bits so that at the end of the track we will overwrite this sync lead-in
+    // and not leave an unused bit of sector header/data in between end and start of the track
+    for (uint32_t ui = 0; ui < (uint32_t) (1000 / fBaseTime); ui++)
+    {
+        DELTA_ITEM(m_uiDeltaPos) = m_uiBaseTime;
+        m_uiDeltaPos++;
+    }
+    
+    // write each sector
+    for (uint32_t uiSector = 0; uiSector < uiNumSectors; uiSector++)
+    {
+        uint8_t ucSectorData[256];
+        calc_sector_data(ePattern, 256, uiSector, ucSectorData);
+
+        // Header sync pattern (40 one bits)
+        for (uint32_t ui = 0; ui < 40; ui++)
+        {
+            DELTA_ITEM(m_uiDeltaPos) = m_uiBaseTime;
+            m_uiDeltaPos++;
+        }
+        
+        // Header
+        WriteByte(0x08);
+        WriteByte(uiSector ^ iDriveTrack ^ ucFormatID[0] ^ ucFormatID[1]);
+        WriteByte(uiSector);
+        WriteByte(iDriveTrack);
+        WriteByte(ucFormatID[0]);
+        WriteByte(ucFormatID[1]);
+        WriteByte(0x0f);
+        WriteByte(0x0f);
+
+        // Header gap
+        for (uint32_t ui = 0; ui < 9; ui++)
+        {
+            WriteByte(0x55);
+        }
+
+        // Data sync pattern (40 one bits)
+        for (uint32_t ui = 0; ui < 40; ui++)
+        {
+            DELTA_ITEM(m_uiDeltaPos) = m_uiBaseTime;
+            m_uiDeltaPos++;
+        }
+
+        // Data block
+        WriteByte(0x07);
+        uint8_t ucChecksum = 0;
+        for (uint32_t uiDataIdx = 0; uiDataIdx < 256; uiDataIdx++)
+        {
+            ucChecksum ^= ucSectorData[uiDataIdx];
+            WriteByte(ucSectorData[uiDataIdx]);
+        }
+        WriteByte(ucChecksum);
+        WriteByte(0x00);
+        WriteByte(0x00);
+        
+        // inter-sector gap
+        for (uint32_t ui = 0; ui < uiSectorGapBytes; ui++)
+        {
+            WriteByte(0x55);
+        }
+    }
+
+    return m_uiDeltaPos;
+}
+
+//////////////////////////////////////////////////////////////////////////
+// private helper methods
+
+void EncoderGCR::WriteBit(int iBit)
+{
+    if (iBit)
+    {
+        DELTA_ITEM(m_uiDeltaPos) = m_uiBaseTime * (m_uiZeroes + 1);
+        m_uiDeltaPos++;
+        m_uiZeroes = 0;
+    }
+    else
+    {
+        m_uiZeroes++;
+    }
+    return;
+}
+
+void EncoderGCR::WriteNybble(int iNybble)
+{
+    static const uint8_t ucQuintuples[16] = { 10, 11, 18, 19, 14, 15, 22, 23, 9, 25, 26, 27, 13, 29, 30, 21 };
+    uint8_t ucQuint = ucQuintuples[iNybble & 15];
+    for (uint32_t ui = 0; ui < 5; ui++)
+    {
+        WriteBit(ucQuint & 16);
+        ucQuint <<= 1;
+    }
+}
+
+void EncoderGCR::WriteByte(int iByte)
+{
+    WriteNybble((iByte >> 4) & 15);
+    WriteNybble(iByte & 15);
+}
+
+void EncoderGCR::calc_sector_data(encoding_pattern_t ePattern, uint32_t uiLength, uint32_t uiSectorNum, uint8_t *pucSectorData)
+{
+    // seed PRNG if necessary
+    if (m_eGeoFormat == ENC_RANDOM)
+    {
+        uint32_t uiCurCycles;
+        asm volatile("  rsr %0, ccount                \n"
+                     : "=a"(uiCurCycles) );
+        srand(uiCurCycles);
+    }
+
+    // write bytes
+    for (uint32_t uiByteIdx = 0; uiByteIdx < uiLength; uiByteIdx++)
+    {
+        switch(ePattern)
+        {
+            case ENC_ZEROS:
+                pucSectorData[uiByteIdx] = 0xEE;
+                break;
+            case ENC_ONES:
+                pucSectorData[uiByteIdx] = 0xE5;
+                break;
+            case ENC_SIXES:
+                pucSectorData[uiByteIdx] = 0x0F;
+                break;
+            case ENC_EIGHTS:
+                pucSectorData[uiByteIdx] = 0x28;
+                break;
+            case ENC_RANDOM:
+                pucSectorData[uiByteIdx] = (rand() & 0xff);
+                break;
         }
     }
 }

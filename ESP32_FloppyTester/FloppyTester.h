@@ -47,5 +47,33 @@ typedef struct _track_metadata
     uint32_t          uiSectorDataCRC[21];
 } track_metadata_t;
 
+class EncoderBase
+{
+protected:
+    EncoderBase(uint16_t *pusDeltaBuffers[], geo_format_t eFormat, int iSides, int iTracks, int iSectors);
+
+public:
+    virtual ~EncoderBase() { };
+
+    // accessors
+
+    // modifiers
+    virtual uint32_t EncodeTrack(encoding_pattern_t ePattern, int iDriveTrack, int iDriveSide) = 0;
+
+    // static creation method
+    static EncoderBase* NewEncoder(uint16_t *pusDeltaBuffers[], geo_format_t eFormat, int iSides, int iTracks, int iSectors);
+
+    // private methods
+private:
+
+    // member variables
+protected:
+    uint16_t          **m_pusDeltaBuffers;
+    uint32_t            m_uiDeltaPos;
+    const geo_format_t  m_eGeoFormat;
+    const int           m_iGeoSides;
+    const int           m_iGeoTracks;
+    const int           m_iGeoSectors;
+};
 
 #endif // FLOPPY_TESTER_H

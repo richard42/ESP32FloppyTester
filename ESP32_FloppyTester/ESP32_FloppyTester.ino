@@ -547,7 +547,7 @@ void display_help(void)
     Serial.write("             IBM   <SS/DS> <X> <Y> - set IBM format, single/double sided, X tracks, Y sectors.\r\n");
     Serial.write("             ATARI <SS/DS> <X> <Y> - set Atari format, single/double sided, X tracks, Y sectors.\r\n");
     Serial.write("             AMIGA                 - set Amiga format, 2 sides, 80 tracks, 11 sectors.\r\n");
-    Serial.write("             COMMODORE             - set Commodore format, 1 side, 40 tracks, 17-21 sectors.\r\n");
+    Serial.write("             COMMODORE             - set Commodore format, 1 side, 35 tracks, 17-21 sectors.\r\n");
     Serial.write("    TRACK READ     - read current track and print decoded data summary (requires formatted disk).\r\n");
     Serial.write("    TRACK ERASE    - erase current track and validate erasure (destroys data on disk).\r\n");
     Serial.write("    TRACK WRITE ...- write track data with current format and given pattern (destroys data on disk).\r\n");
@@ -1113,7 +1113,8 @@ void track_read(void)
     if (l_uiDeltaCnt > 10)
     {
         float fPeakCenters[3];
-        if ((float) (auiCountByWavelen[4] + auiCountByWavelen[6] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
+        if ((float) (auiCountByWavelen[4] + auiCountByWavelen[6] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f &&
+            auiCountByWavelen[6] > auiCountByWavelen[12])
         {
             Serial.write("Double Density MFM track detected.\r\n");
             DecoderMFM decoder((const uint16_t **) l_pusDeltaBuffers, l_uiDeltaPos);
@@ -1234,8 +1235,9 @@ void track_write_pattern(encoding_pattern_t ePattern)
     }
 
     // create an encoder, and write out pulse intervals for the given data pattern
-    EncoderMFM encoder(l_pusDeltaBuffers, l_eGeoFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
-    uint32_t uiDeltaMax = encoder.EncodeTrack(ePattern, l_iDriveTrack, l_iDriveSide);
+    EncoderBase *pEncoder = EncoderBase::NewEncoder(l_pusDeltaBuffers, l_eGeoFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
+    uint32_t uiDeltaMax = pEncoder->EncodeTrack(ePattern, l_iDriveTrack, l_iDriveSide);
+    delete pEncoder;
 
     // select the drive, if necessary
     if (!l_bDriveMotorOn)
@@ -1317,7 +1319,7 @@ void track_readwrite_test(void)
     portDISABLE_INTERRUPTS();
 
     // run the pattern read/write test
-    char chResults[64];
+    char chResults[128];
     test_track_patterns(chResults);
 
     // re-enable interrupts
@@ -1625,9 +1627,10 @@ void disk_write_pattern(encoding_pattern_t ePattern)
 
         // create an encoder, and write out pulse intervals for the given data pattern
         {
-            EncoderMFM encoder(l_pusDeltaBuffers, l_eGeoFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
-            uint32_t uiDeltaMax = encoder.EncodeTrack(ePattern, l_iDriveTrack, l_iDriveSide);
+            EncoderBase *pEncoder = EncoderBase::NewEncoder(l_pusDeltaBuffers, l_eGeoFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
+            uint32_t uiDeltaMax = pEncoder->EncodeTrack(ePattern, l_iDriveTrack, l_iDriveSide);
             record_track_data(uiDeltaMax);
+            delete pEncoder;
         }
 
         // write the other side if necessary
@@ -1639,9 +1642,10 @@ void disk_write_pattern(encoding_pattern_t ePattern)
             // wait 100us
             delay_micros(100);
             // create an encoder, and write out pulse intervals for the given data pattern
-            EncoderMFM encoder(l_pusDeltaBuffers, l_eGeoFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
-            uint32_t uiDeltaMax = encoder.EncodeTrack(ePattern, l_iDriveTrack, l_iDriveSide);
+            EncoderBase *pEncoder = EncoderBase::NewEncoder(l_pusDeltaBuffers, l_eGeoFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
+            uint32_t uiDeltaMax = pEncoder->EncodeTrack(ePattern, l_iDriveTrack, l_iDriveSide);
             record_track_data(uiDeltaMax);
+            delete pEncoder;
         }
     }
     //l_iDriveTrack--;  // decrement this so it reflects the actual current track number
@@ -1741,7 +1745,7 @@ void disk_readwrite_test(void)
         delay_micros(20000);
 
         // run the pattern read/write test
-        char chResults1[64];
+        char chResults1[128];
         test_track_patterns(chResults1);
 
         // test the other side if necessary
@@ -1753,7 +1757,7 @@ void disk_readwrite_test(void)
             // wait 100us
             delay_micros(100);
             // run the test on this side
-            char chResults2[64];
+            char chResults2[128];
             test_track_patterns(chResults2);
             // print results
             portENABLE_INTERRUPTS();
@@ -1890,7 +1894,8 @@ void calculate_track_metadata(track_metadata_t& rsMeta)
     
     // detect track encoding
     float fPeakCenters[3];
-    if ((float) (auiCountByWavelen[4] + auiCountByWavelen[6] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f)
+    if ((float) (auiCountByWavelen[4] + auiCountByWavelen[6] + auiCountByWavelen[8]) / l_uiDeltaCnt > 0.9f &&
+                 auiCountByWavelen[6] > auiCountByWavelen[12])
     {
         rsMeta.eModulation = MOD_MFM;
         DecoderMFM decoder((const uint16_t **) l_pusDeltaBuffers, l_uiDeltaPos);
@@ -1919,9 +1924,10 @@ void test_track_patterns(char *pchResults)
         encoding_pattern_t ePattern = aePatterns[iPatternIdx];
         // create an encoder, calculate pulse intervals for the given data pattern, and record it to disk
         {
-            EncoderMFM encoder(l_pusDeltaBuffers, l_eGeoFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
-            uint32_t uiDeltaMax = encoder.EncodeTrack(ePattern, l_iDriveTrack, l_iDriveSide);
+            EncoderBase *pEncoder = EncoderBase::NewEncoder(l_pusDeltaBuffers, l_eGeoFormat, l_iGeoSides, l_iGeoTracks, l_iGeoSectors);
+            uint32_t uiDeltaMax = pEncoder->EncodeTrack(ePattern, l_iDriveTrack, l_iDriveSide);
             record_track_data(uiDeltaMax);
+            delete pEncoder;
         }
         // read back the track and decode the data
         track_metadata_t sMeta;
@@ -2216,4 +2222,29 @@ std::string command_input(void)
 int compare_uint32(const uint32_t *puiA, const uint32_t *puiB)
 {
     return *puiB - *puiA;
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Base encoder class
+
+EncoderBase::EncoderBase(uint16_t *pusDeltaBuffers[], geo_format_t eFormat, int iSides, int iTracks, int iSectors)
+ : m_pusDeltaBuffers(pusDeltaBuffers)
+ , m_uiDeltaPos(0)
+ , m_eGeoFormat(eFormat)
+ , m_iGeoSides(iSides)
+ , m_iGeoTracks(iTracks)
+ , m_iGeoSectors(iSectors)
+{
+}
+
+EncoderBase* EncoderBase::NewEncoder(uint16_t *pusDeltaBuffers[], geo_format_t eFormat, int iSides, int iTracks, int iSectors)
+{
+    if (eFormat == FMT_C64)
+    {
+        return new EncoderGCR(pusDeltaBuffers, eFormat, iSides, iTracks, iSectors);
+    }
+    else
+    {
+        return new EncoderMFM(pusDeltaBuffers, eFormat, iSides, iTracks, iSectors);
+    }
 }
