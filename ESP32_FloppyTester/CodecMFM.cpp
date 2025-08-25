@@ -238,7 +238,7 @@ uint32_t DecoderMFM::ReadSectorBytesIBM(uint32_t uiStartIdx, bool bDebugPrint, t
                 // Sector ID record
                 uiExpectedBytes = 7;
             }
-            else if (ucBytes[0] == 0xfb)
+            else if (ucBytes[0] >= 0xf8 && ucBytes[0] <= 0xfb) // F8 F9 and FA were only used on TRS-80 disks
             {
                 // Sector data
                 if (m_uiSectorDataLength == 0)
@@ -543,7 +543,7 @@ uint32_t EncoderMFM::EncodeTrack360kIBM(encoding_pattern_t ePattern, int iDriveT
         {
             WriteByte(ucSectorData[uiDataIdx]);
         }
-        const uint16_t usDataCRC = calc_data_crc(ucSectorData);
+        const uint16_t usDataCRC = calc_data_crc(ucSectorData, 256);
         WriteByte(usDataCRC >> 8);
         WriteByte(usDataCRC & 0xff);
         // data gap
@@ -625,7 +625,7 @@ uint32_t EncoderMFM::EncodeTrack720kIBM(encoding_pattern_t ePattern, int iDriveT
         {
             WriteByte(ucSectorData[uiDataIdx]);
         }
-        const uint16_t usDataCRC = calc_data_crc(ucSectorData);
+        const uint16_t usDataCRC = calc_data_crc(ucSectorData, 512);
         WriteByte(usDataCRC >> 8);
         WriteByte(usDataCRC & 0xff);
         // data gap
@@ -701,7 +701,7 @@ uint32_t EncoderMFM::EncodeTrack800kAtari(encoding_pattern_t ePattern, int iDriv
         {
             WriteByte(ucSectorData[uiDataIdx]);
         }
-        const uint16_t usDataCRC = calc_data_crc(ucSectorData);
+        const uint16_t usDataCRC = calc_data_crc(ucSectorData, 512);
         WriteByte(usDataCRC >> 8);
         WriteByte(usDataCRC & 0xff);
     }
@@ -1022,14 +1022,14 @@ uint16_t EncoderMFM::calc_id_crc(uint32_t uiDriveSide, uint32_t uiDriveTrack, ui
     return usCurrentCRC;
 }
 
-uint16_t EncoderMFM::calc_data_crc(uint8_t *pucSectorData)
+uint16_t EncoderMFM::calc_data_crc(uint8_t *pucSectorData, uint32_t uiDataLength)
 {
     uint16_t usCurrentCRC = 0xffff;
 
     uint8_t ucDataAddrMarkBytes[4] = { 0xa1, 0xa1, 0xa1, 0xfb };
     DecoderMFM::advance_crc16(usCurrentCRC, ucDataAddrMarkBytes, 4);
 
-    DecoderMFM::advance_crc16(usCurrentCRC, pucSectorData, 512);
+    DecoderMFM::advance_crc16(usCurrentCRC, pucSectorData, uiDataLength);
 
     return usCurrentCRC;
 }

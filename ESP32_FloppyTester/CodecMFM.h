@@ -75,7 +75,7 @@ private:
     void calc_sector_data(encoding_pattern_t ePattern, uint32_t uiLength, uint32_t uiSectorNum, uint8_t *pucSectorData);
     void calc_amiga_sector(encoding_pattern_t ePattern, uint32_t uiDriveTrack, uint32_t uiDriveSide, uint32_t uiSectorNum, uint8_t pucSectorData[540]);
     uint16_t calc_id_crc(uint32_t uiDriveSide, uint32_t uiDriveTrack, uint32_t uiSectorNum, uint32_t uiSectorLength);
-    uint16_t calc_data_crc(uint8_t *pucSectorData);
+    uint16_t calc_data_crc(uint8_t *pucSectorData, uint32_t uiDataLength);
 
     // member variables
 private:
